@@ -1,0 +1,268 @@
+---
+title: "Metrics Visualisation and analysis on individuals "
+#subtitle: Part III - Tuberculosis Preventive Treatment Management
+author: "Angelique Porciani"
+date: last-modified
+date-format: "[Last Updated on] DD MMMM, YYYY"
+title-block-banner:  "#4E598C" 
+format:
+  html:
+    code-fold: true
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+toc: true
+execute:
+  warning: false
+  message: false
+  cache: true
+---
+
+
+```{r}
+# load package----
+
+library(tidyverse)
+library(patchwork)
+library(kableExtra)
+library(gtsummary)
+library(FactoMineR)
+library(glmmTMB)
+library(factoextra)
+
+# load data ---- 
+
+# res_by_ind_spatial <- read.delim("./Data_larvae/data_larves_1hr/Results/Spatial/Element_Tous_bords_0.csv",
+#                                  ,
+#                                  sep = ";") %>% 
+#   separate(Video, c("Camera", "FPS", "Replicat"), remove=FALSE)
+
+res_by_ind <- read.delim("./data_larvae/Data_vid_rouge/Results/Results_by_ind.csv",
+                                 ,
+                                 sep = ";") %>% 
+  separate(Video, c("Rpi", "Replicat", "Passage", "Lot"), remove=FALSE) %>% 
+  select(!c(25:29))
+
+res_by_ind <- res_by_ind %>% mutate(Lot=case_when(
+                                                Lot=="lot2"~2,
+                                                .default = 1))
+
+corres_ID <- read_csv2("./data_larvae/Data_vid_rouge/corres_ID_rouge_1.csv") 
+
+corres_ttmt <- read_csv2("./data_larvae/Data_vid_rouge/corr_ttmt_plaque_rouge.csv")%>% 
+  select(c(1:5))
+
+
+Speed_bout_dat <- read_csv("./data_larvae/Data_vid_rouge/res_bouts_Mspeed_rouge.csv")
+
+## ID attribution 
+corres_ID <- corres_ID %>% 
+  mutate(Arena=as.numeric(str_extract(Arena, "\\d.*")))
+
+res_by_ind_2<- res_by_ind %>%
+  left_join(corres_ID) 
+
+res_by_ind_2 <- res_by_ind_2 %>% 
+  mutate(Plaque=as.numeric(str_extract(ID, "\\d+")),
+        Rpi=str_extract(Rpi, "rpi\\d*"), 
+        Replicat=str_extract(Video,"R\\d*"),
+        Replicat2=str_extract(Replicat,"\\d.*")) %>% 
+  inner_join(corres_ttmt) %>% 
+  mutate(End_seq_min=as.numeric(End_seq)/60, 
+        ArenaN = str_extract(Arena, "\\d.*")) %>% 
+  mutate(fullID = str_c(Rpi, Replicat, Passage, Lot, ID),
+         fullID2=str_c(Rpi, ArenaN, Replicat, ID, Passage, Lot),
+         fullID3=gsub("[^0-9]", "", fullID2))
+
+
+# join with res_by_ind2
+res_by_ind_work <- res_by_ind_2 %>%
+  left_join(Speed_bout_dat) %>% 
+  dplyr::mutate(Max_bout_activ2=as.integer(as.character(Max_bout_activ)),
+         Max_Speed2=as.integer(as.character(Max_Speed)))
+
+
+# res_by_ind_spatial <- res_by_ind_spatial %>%
+#   inner_join(corres_ID) 
+# 
+# res_by_ind_spatial <- res_by_ind_spatial %>% 
+#   mutate(Plaque=as.numeric(str_extract(ID, "\\d+"))) %>% 
+#   inner_join(corres_ttmt)%>% mutate(fullID = str_c(Camera, Replicat, ID))
+
+```
+
+## Number of mosquitoes recorded 
+```{r}
+res_by_ind_2%>% filter(Sequence=="General") %>% drop_na(Traitement) %>% 
+  group_by(Traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes larvae tracked ", booktabs = T)%>%
+	kable_styling(full_width = T)
+```
+
+## Lost individuals regarding to proportion of time lost 
+
+```{r}
+
+res_by_ind_2%>% filter(Sequence=="General" & Prop_time_lost < 0.20) %>%
+  group_by(Traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+```
+
+## Number of larvae tracked and with less than 20\% lost time by Replicate and Treatment 
+```{r}
+res_by_ind_2 %>% filter(Sequence=="General" & Prop_time_lost < 0.20) %>% 
+  group_by(Replicat, Traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each replicate and treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+```
+
+## Visualisation (plot)
+
+### All parameters estimated from ATA 
+
+```{r}
+
+data_temp=subset(res_by_ind_work, Prop_time_lost < 0.20 &  Sequence=="General" ) %>% mutate(replicat2=as.factor(Replicat))
+
+loop.list <- c("Prop_time_moving", "Average_Speed", "Average_Speed_Moving", "Traveled_Dist", "Meander", "Traveled_Dist_Moving", "Meander_moving", "Max_bout_activ2", "Max_Speed2")
+
+plot_list <- list()
+
+for (n in loop.list)
+  {
+  plot_list[[n]] <- ggplot(data=data_temp)+
+    geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="Traitement"), width = 0.15, position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="Traitement", y=n,
+                    fill = "Traitement",
+                    colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none", axis.title.x = element_blank())+
+    ylab(paste(n))+
+    scale_color_manual(
+      values = c("#648FFF", "firebrick3"))+
+    scale_fill_manual(
+      values = c("#648FFF", "firebrick3"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[c(1:4,6)], nrow=3)
+
+# ggsave("./Data_larvae/1h_allsurf_1-6.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[5:9], nrow=3)
+
+
+# ggsave("./Data_larvae/1h_allsurf_7-9.jpeg", width = 30, height = 20, units = "cm")
+
+# test effet replicat 
+
+ggplot(data=data_temp)+
+    geom_jitter(aes(x=Traitement, y=Prop_time_moving, color=Replicat2)) +
+    # geom_boxplot(aes(x=Traitement, y=n, color=""), width = 0.15, position = position_dodge(0.9)) +
+    #  geom_violin(aes_string(x="Traitement", y=n,
+    #                 fill = "Traitement",
+    #                 colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()
+
+ggplot(data=data_temp)+
+    geom_jitter(aes(x=Traitement, y=Average_Speed, color=Replicat2)) +
+    theme_light()
+    theme(legend.position = "none", axis.title.x = element_blank())
+    
+    
+ggplot(data=data_temp)+
+    geom_jitter(aes(x=Traveled_Dist_Moving, y=Prop_time_moving, color=Replicat2)) +
+    theme_light()
+    theme(legend.position = "none", axis.title.x = element_blank())
+    
+ggplot(data=data_temp)+
+  geom_jitter(aes(x=Traitement, y=Traveled_Dist, color=Replicat2)) +
+  theme_light()
+  theme(legend.position = "none", axis.title.x = element_blank())
+    
+    
+```
+
+# Analyses 
+
+```{r}
+# prop time moving 
+hist(data_temp$Prop_time_moving)
+glm_PM <- glm(Prop_time_moving~Traitement, data=data_temp, family=quasibinomial)
+summary(glm_PM)
+
+# average speed moving
+
+glm_ASM <- glmmTMB(Average_Speed_Moving~Traitement, data=data_temp)
+summary(glm_ASM)
+
+# average speed 
+
+glm_AS <- glmmTMB(Average_Speed~Traitement, data=data_temp)
+summary(glm_AS)
+
+# TDM
+hist(data_temp$Traveled_Dist_Moving)
+glm_TDM_Gau <- glmmTMB(Traveled_Dist_Moving~Traitement, data=data_temp, family=gaussian)
+glm_TDM_Gam <- glmmTMB(Traveled_Dist_Moving~Traitement, data=data_temp, family=Gamma)
+
+AIC(glm_TDM_Gam, glm_TDM_Gau)
+
+summary(glm_TDM_Gam)
+
+# TD 
+hist(data_temp$Traveled_Dist)
+glm_TD_Gau <- glmmTMB(Traveled_Dist~Traitement, data=data_temp, family=gaussian)
+glm_TD_Gam <- glmmTMB(Traveled_Dist~Traitement, data=data_temp, family=Gamma)
+
+AIC(glm_TD_Gam, glm_TD_Gau)
+
+summary(glm_TD_Gam)
+
+# max Speed 
+hist(data_temp$Max_Speed2)
+
+glm_MS_Gau <- glmmTMB(Max_Speed2~Traitement, data=data_temp, family=gaussian)
+summary(glm_MS_Gau)
+
+glm_MS_Pois <- glmmTMB(Max_Speed2~Traitement, data=data_temp, family=poisson)
+summary(glm_MS_Pois)
+
+glm_MS_NB1 <- glmmTMB(Max_Speed2~Traitement, data=data_temp, family=nbinom1())
+summary(glm_MS_NB1)
+
+AIC(glm_MS_Gau, glm_MS_NB1, glm_MS_Pois)# gaussian win 
+
+# bout activ
+
+hist(data_temp$Max_bout_activ2)
+glm_MBA_Gau <- glmmTMB(Max_bout_activ2~Traitement, data=data_temp, family=gaussian)
+summary(glm_MBA_Gau)
+
+library(DHARMa)
+res_MBA <- simulateResiduals(glm_MBA_Gau)
+plot(res_MBA)#OK
+
+res_MS <- simulateResiduals(glm_MS_Gau)
+plot(res_MS)#OK
+
+res_AS <- simulateResiduals(glm_AS)
+plot(res_AS)#OK
+
+res_ASM <- simulateResiduals(glm_ASM)
+plot(res_ASM)#OK
+
+res_TD <- simulateResiduals(glm_TD_Gam)
+plot(res_TD)#OK
+
+res_TDM <- simulateResiduals(glm_TDM_Gam)
+plot(res_TDM)#NOT OK 
+
+```
+

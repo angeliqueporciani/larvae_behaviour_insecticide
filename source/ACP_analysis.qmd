@@ -1,0 +1,161 @@
+---
+title: "ACP_analysis"
+format: html
+editor: visual
+---
+# Import data & load packages 
+
+```{r}
+
+library(dplyr)
+library(FactoMineR)
+
+data_complete <- readRDS("../output/data_complete.rds")
+data_complete_SP <- readRDS("../output/data_complete_SP.rds")
+step_df_orange_orderedSt <- read.csv("../output/step_df_orange_orderedSt.csv") %>% 
+  rename(Step_val=value)
+step_df_rouge_orderedSt <- read.csv("../output/step_df_rouge_orderedSt.csv") %>% 
+  rename(Step_val=value)
+
+TiS_df_or_2 <- read.csv("../output/TiS_df_or_2.csv") %>% rename(Tis_val=value) %>% 
+  select(!c(9:11,14:16))
+TiS_df_rou_2 <- read.csv("../output/TiS_df_rou_2.csv") %>% rename(Tis_val=value) %>% 
+  select(!c(9:11,14:16))
+
+names(TiS_df_rou_2)
+names(TiS_df_or_2)
+
+names(step_df_orange_orderedSt)
+names(data_complete)
+
+# Filter and keep only variable of interest for ACP 
+
+data_SP_ACP <- data_complete_SP %>% select(fullID2, Mean_Distance, Prop_time_inside, Nb_entries, Prop_time_moving,
+                                           Average_Speed_moving, Traveled_Dist_Moving)
+data_Mov_ACP <- data_complete %>% select(fullID2, Prop_time_moving,
+                                           Average_Speed_Moving, Traveled_Dist_Moving,Max_bout_activ, Max_bout_inactiv, Max_speed,  
+                                         Experiment, Replicat, Lot,date_adulte2, date_mort2, date_nymphe2, sexe, duree_vie, duree_nymphe)
+
+# Join all data 
+
+step_data <- rbind(step_df_orange_orderedSt, step_df_rouge_orderedSt )
+Tis_data <- rbind(TiS_df_or_2, TiS_df_rou_2)
+
+HMM_P_data <- inner_join(Tis_data, step_data)
+
+Mov_P_data <- inner_join(data_Mov_ACP, data_SP_ACP, by="fullID2")
+
+ACP_data <- inner_join(HMM_P_data, Mov_P_data)
+
+```
+
+# ACP 
+
+```{r}
+
+library(FactoMineR)
+library(factoextra)
+
+# Chargement des données
+# ACP_data <- read.csv("chemin/vers/vos/données.csv", row.names = 1)
+# Ou si les données sont déjà en mémoire : utiliser directement ACP_data
+
+# ============================================================================
+# 1. EXPLORATION PRÉLIMINAIRE DES DONNÉES
+# ============================================================================
+
+# Structure des données
+str(ACP_data)
+
+# Résumé statistique
+summary(ACP_data)
+
+# Vérification des valeurs manquantes
+colSums(is.na(ACP_data))
+
+ACP_data2 <- ACP_data %>% select_if(is.numeric) %>% 
+  select(!c(1:3))
+summary(ACP_data2)
+
+# Pourcentage de NA par colonne
+ACP_data2 %>% 
+  summarise(across(everything(), ~mean(is.na(.)) * 100))
+
+# quasiment pas de NA, inf a 1% on supprime les NA pas besoin d'imputation 
+ACP_data2 <- ACP_data2 %>% na.omit()
+
+# ============================================================================
+# 2. RÉALISATION DE L'ACP
+# ============================================================================
+library(missMDA)
+
+# ACP de base (toutes les variables quantitatives)
+res.pca <- PCA(ACP_data2, 
+               scale.unit = TRUE,      # Standardisation des variables
+               ncp = 5,                # Nombre de dimensions à conserver
+               graph = TRUE)           # Affichage des graphiques
+
+# Si vous avez des variables qualitatives supplémentaires (ne participant pas à l'ACP)
+# res.pca <- PCA(ACP_data, 
+#                quanti.sup = c(4, 5),    # Indices des variables quantitatives supplémentaires
+#                quali.sup = c(1),         # Indices des variables qualitatives supplémentaires
+#                scale.unit = TRUE,
+#                ncp = 5,
+#                graph = TRUE)
+
+# ============================================================================
+# 3. RÉSUMÉ DES RÉSULTATS
+# ============================================================================
+
+# Résumé complet
+summary(res.pca, nbelements = 10)
+
+# Valeurs propres (variance expliquée par chaque composante)
+res.pca$eig
+
+# ============================================================================
+# 4. VISUALISATIONS AVEC FACTOEXTRA
+# ============================================================================
+
+# --- Graphique des valeurs propres (scree plot) ---
+fviz_eig(res.pca, 
+         addlabels = TRUE,
+         ylim = c(0, 50),
+         main = "Variance expliquée par les composantes principales")
+
+# --- Graphique des variables ---
+# Cercle de corrélation (plan 1-2)
+fviz_pca_var(res.pca,
+             col.var = "contrib",      # Coloration par contribution
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,             # Éviter le chevauchement des étiquettes
+             title = "Graphique des variables - ACP")
+
+# Contributions des variables à la dimension 1
+fviz_contrib(res.pca, choice = "var", axes = 1, top = 10)
+
+# Contributions des variables à la dimension 2
+fviz_contrib(res.pca, choice = "var", axes = 2, top = 10)
+
+# --- Graphique des individus ---
+# Nuage des individus (plan 1-2)
+fviz_pca_ind(res.pca,
+             col.ind = "cos2",         # Coloration par qualité de représentation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,
+             title = "Graphique des individus - ACP")
+
+# Contributions des individus à la dimension 1
+fviz_contrib(res.pca, choice = "ind", axes = 1, top = 10)
+
+# Contributions des individus à la dimension 2
+fviz_contrib(res.pca, choice = "ind", axes = 2, top = 10)
+
+# --- Biplot (variables + individus) ---
+fviz_pca_biplot(res.pca,
+                repel = TRUE,
+                col.var = "#2E9FDF",   # Couleur des variables
+                col.ind = "#696969",   # Couleur des individus
+                title = "Biplot - ACP")
+```
+

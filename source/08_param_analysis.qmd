@@ -1,0 +1,567 @@
+---
+title: "08_analysis_mod_param"
+#subtitle: Part III - Tuberculosis Preventive Treatment Management
+author: "Angelique Porciani"
+date: last-modified
+date-format: "[Last Updated on] DD MMMM, YYYY"
+title-block-banner:  "#4E598C" 
+format:
+  html:
+    code-fold: true
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+editor: visual
+editor_options: 
+  chunk_output_type: inline
+toc: true
+execute:
+  warning: false
+  message: false
+  cache: true
+---
+# Import data
+```{r}
+library(glmmTMB)
+library(emmeans)
+library(DHARMa)
+library(car)
+library(lme4)
+library(performance)
+library(dplyr)
+library(coxme)
+library(ggplot2)
+## Analysis split for red and orange 
+
+data_complete <- readRDS("../output/data_complete.rds")
+data_complete_SP <- readRDS("../output/data_complete_SP.rds")
+
+```
+
+# Orange
+
+```{r}
+# Modèle Orange concentration and inf 20 time lost
+data_orange_inf20 <- data_complete %>% dplyr::filter(Experiment=="Orange"&Prop_time_lost<0.2)
+data_orange_SP <- data_complete_SP %>% dplyr::filter(Experiment=="Orange" & Prop_time_lost<0.2)
+
+```
+
+## Prop time moving
+```{r}
+### Prop time moving 
+ggplot(data_orange_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Prop_time_moving, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Prop_time_moving, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+modPTM <- glmmTMB(sqrt(Prop_time_moving)~Traitement+sexe+(1|Replicat), 
+                             data=data_orange_inf20)
+res <- simulateResiduals(modPTM)
+plot(res)
+
+summary(modPTM)
+emmeans(modPTM, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+
+## Traveled distance
+```{r}
+### Traveled distance Moving
+
+ggplot(data_orange_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Traveled_Dist_Moving, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Traveled_Dist_Moving, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+modTVM <- glmmTMB(Traveled_Dist_Moving~Traitement*sexe+(1|Replicat), 
+                  data=data_orange_inf20)
+
+Anova(modTVM)
+
+modTVM <- glmmTMB(Traveled_Dist_Moving~Traitement+sexe+(1|Replicat), 
+                  data=data_orange_inf20)
+
+res <- simulateResiduals(modTVM)
+plot(res)
+
+
+summary(modTVM)
+emmeans(modTVM, pairwise~Traitement+sexe, infer=TRUE, type="response")
+
+```
+
+## avg speed moving 
+```{r}
+### Average speed moving 
+
+ggplot(data_orange_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Average_Speed_Moving, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Average_Speed_Moving, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+modAVM <- glmmTMB(Average_Speed_Moving~Traitement*sexe+(1|Replicat), 
+                  data=data_orange_inf20)
+
+Anova(modAVM)
+
+modAVM <- glmmTMB(Average_Speed_Moving~Traitement+sexe+(1|Replicat), 
+                  data=data_orange_inf20)
+
+res <- simulateResiduals(modAVM)
+plot(res)
+
+summary(modAVM)
+emmeans(modAVM, pairwise~Traitement+sexe, infer=TRUE, type="response")
+
+
+```
+
+## Max bout inactiv 
+```{r}
+
+### Max bout inactiv 
+data_orange_inf20_sub <- data_orange_inf20 %>% dplyr::filter(Max_bout_inactiv<1500)
+ggplot(data_orange_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Max_bout_inactiv, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Max_bout_inactiv, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+ggplot(data_orange_inf20_sub)+
+  geom_boxplot(aes(x=Traitement, y=Max_bout_inactiv, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Max_bout_inactiv, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+hist(data_orange_inf20_sub$Max_bout_inactiv)
+
+
+modMI <- glmmTMB(Max_bout_inactiv~Traitement*sexe+(1|Replicat), 
+                 data=data_orange_inf20_sub, family=nbinom2())
+
+Anova(modMI)
+modMI <- glmmTMB(Max_bout_inactiv~Traitement+sexe+(1|Replicat), 
+                 data=data_orange_inf20_sub, family=nbinom2(), zi=~1)
+
+summary(modMI)
+
+
+
+res <- simulateResiduals(modMI)
+plot(res)#  
+
+emmeans(modMI, pairwise~Traitement+sexe, infer=TRUE, type="response")
+
+```
+
+## Max bout activ 
+
+## Max speed 
+```{r}
+### Max speed
+ggplot(data_orange_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Max_speed, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Max_speed, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+modMS <- glmmTMB(Max_speed~Traitement*sexe+(1|Replicat), 
+                  data=data_orange_inf20)
+Anova(modMS)
+modMS <- glmmTMB(Max_speed~Traitement+sexe+(1|Replicat), 
+                 data=data_orange_inf20)
+summary(modMS)
+
+
+
+res <- simulateResiduals(modMS)
+plot(res)
+
+
+emmeans(modMS, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+## Latency
+
+```{r}
+ggplot(data_orange_SP)+
+  geom_boxplot(aes(x=Traitement, y=Latency, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Latency, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+hist(data_orange_SP$Latency)
+
+modLat <- glmmTMB(Latency~Traitement+sexe+(1|Replicat), 
+                             data=data_orange_SP, family=nbinom1())
+res <- simulateResiduals(modLat)
+plot(res)
+
+summary(modLat)
+emmeans(modLat, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+## Prop time alongside walls 
+
+```{r}
+ggplot(data_orange_SP)+
+  geom_boxplot(aes(x=Traitement, y=Prop_time_inside, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Prop_time_inside, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+modPTIW <- glmmTMB(sqrt(Prop_time_inside)~Traitement+sexe+(1|Replicat), 
+                             data=data_orange_SP)
+res <- simulateResiduals(modPTIW)
+plot(res)
+
+summary(modPTIW)
+emmeans(modPTIW, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+## Prop time moving alongside walls
+```{r}
+ggplot(data_orange_SP)+
+  geom_boxplot(aes(x=Traitement, y=Prop_time_moving, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Prop_time_moving, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+modPTMs<- glmmTMB(sqrt(Prop_time_moving)~Traitement+sexe+(1|Replicat), 
+                             data=data_orange_SP)
+res <- simulateResiduals(modPTMs)
+plot(res)
+
+summary(modPTMs)
+emmeans(modPTMs, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+## Nb entries
+```{r}
+ggplot(data_orange_SP)+
+  geom_boxplot(aes(x=Traitement, y=Nb_entries, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Nb_entries, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+modNbE<- glmmTMB(Nb_entries~Traitement+sexe+(1|Replicat), 
+                             data=data_orange_SP, family=nbinom1())
+res <- simulateResiduals(modNbE)
+plot(res)
+
+summary(modNbE)
+emmeans(modNbE, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+
+# Rouge 
+
+```{r}
+data_rouge_inf20 <- data_complete %>% dplyr::filter(Experiment=="Rouge"&Prop_time_lost<0.2)
+data_rouge_SP <- data_complete_SP %>% dplyr::filter(Experiment=="Rouge"&Prop_time_lost<0.2)
+
+```
+
+## Prop time moving
+
+```{r}
+ggplot(data_rouge_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Prop_time_moving, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Prop_time_moving, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+modPTM <- glmmTMB(sqrt(Prop_time_moving)~Traitement+sexe+(1|Replicat), 
+                  data=data_rouge_inf20)
+
+res <- simulateResiduals(modPTM)
+plot(res)
+
+summary(modPTM)
+
+emmeans(modPTM, pairwise~Traitement+sexe, infer=TRUE, type="response")
+
+```
+
+## Traveled distance moving 
+
+```{r}
+
+ggplot(data_rouge_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Traveled_Dist_Moving, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Traveled_Dist_Moving, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+hist(data_rouge_inf20$Traveled_Dist_Moving)
+
+modTVM <- glmmTMB(Traveled_Dist_Moving~Traitement*sexe+(1|Replicat), 
+                  data=data_rouge_inf20)
+Anova(modTVM)
+modTVM <- glmmTMB(Traveled_Dist_Moving~Traitement+sexe+(1|Replicat), 
+                  data=data_rouge_inf20, family=nbinom1())
+summary(modTVM)
+res <- simulateResiduals(modTVM)
+plot(res)
+
+# transfo
+
+modTVM <- glmmTMB(sqrt(Traveled_Dist_Moving)~Traitement+sexe+(1|Replicat), 
+                  data=data_rouge_inf20)
+res <- simulateResiduals(modTVM)
+plot(res)
+Anova(modTVM)# sors pas mais modèle meilleur avec variable sexe 
+
+emmeans(modTVM, pairwise~Traitement+sexe, infer=TRUE, type="response")
+
+
+```
+
+## avg speed moving 
+```{r}
+ggplot(data_rouge_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Average_Speed_Moving, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Average_Speed_Moving, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+modAVM <- glmmTMB(Average_Speed_Moving~Traitement*sexe+(1|Replicat), 
+                  data=data_orange_inf20)
+
+Anova(modAVM)
+
+modAVM <- glmmTMB(Average_Speed_Moving~Traitement+sexe+(1|Replicat), 
+                  data=data_rouge_inf20)
+
+res <- simulateResiduals(modAVM)
+plot(res)
+
+summary(modAVM)
+emmeans(modAVM, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+## Max bout inactiv 
+```{r}
+ggplot(data_rouge_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Max_bout_inactiv, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Max_bout_inactiv, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+modMI <- glmmTMB(Max_bout_inactiv~Traitement+sexe+(1|Replicat), 
+                 data=data_rouge_inf20, family=nbinom2(), zi=~1)
+
+
+res <- simulateResiduals(modMI)
+plot(res)
+
+summary(modMI)
+emmeans(modMI, pairwise~Traitement+sexe, infer=TRUE, type="response")
+
+```
+
+## Max bout activ 
+
+```{r}
+
+ggplot(data_rouge_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Max_bout_activ, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Max_bout_activ, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+# modMAct <- glmmTMB(Max_bout_activ~Traitement+sexe+(1|Replicat), 
+#                  data=data_rouge_inf20, family=nbinom2(), zi=~1)
+# 
+# 
+# res <- simulateResiduals(modMI)
+# plot(res)
+# 
+# summary(modMI)
+# emmeans(modMI, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+## Max speed 
+```{r}
+ggplot(data_rouge_inf20)+
+  geom_boxplot(aes(x=Traitement, y=Max_speed, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Max_speed, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+
+modMS <- glmmTMB(Max_speed~Traitement+sexe+(1|Replicat), 
+                 data=data_rouge_inf20)
+summary(modMS)
+
+res <- simulateResiduals(modMS)
+plot(res)
+
+emmeans(modMS, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+## Latency
+
+```{r}
+ggplot(data_rouge_SP)+
+  geom_boxplot(aes(x=Traitement, y=Latency, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Latency, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+hist(data_orange_SP$Latency)
+
+modLat <- glmmTMB(Latency~Traitement+sexe+(1|Replicat), 
+                             data=data_rouge_SP, family=nbinom1())
+res <- simulateResiduals(modLat)
+plot(res)
+
+summary(modLat)
+emmeans(modLat, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+
+## Prop time alongside walls 
+
+```{r}
+ggplot(data_rouge_SP)+
+  geom_boxplot(aes(x=Traitement, y=Prop_time_inside, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Prop_time_inside, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+modPTIW <- glmmTMB(sqrt(Prop_time_inside)~Traitement+sexe+(1|Replicat), 
+                             data=data_rouge_SP)
+res <- simulateResiduals(modPTIW)
+plot(res)
+
+summary(modPTIW)
+emmeans(modPTIW, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+
+## Prop time moving alongside walls
+
+```{r}
+ggplot(data_rouge_SP)+
+  geom_boxplot(aes(x=Traitement, y=Prop_time_moving, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Prop_time_moving, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+modPTMs<- glmmTMB(sqrt(Prop_time_moving)~Traitement+sexe+(1|Replicat), 
+                             data=data_rouge_SP)
+res <- simulateResiduals(modPTMs)
+plot(res)
+
+summary(modPTMs)
+emmeans(modPTMs, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+
+## Nb entries
+
+```{r}
+ggplot(data_rouge_SP)+
+  geom_boxplot(aes(x=Traitement, y=Nb_entries, colour=Traitement))+
+  geom_jitter(aes(x=Traitement, y=Nb_entries, colour=Traitement))+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+modNbE<- glmmTMB(Nb_entries~Traitement+sexe+(1|Replicat), 
+                             data=data_rouge_SP, family=nbinom1())
+res <- simulateResiduals(modNbE)
+plot(res)
+
+summary(modNbE)
+emmeans(modNbE, pairwise~Traitement+sexe, infer=TRUE, type="response")
+```
+
+# Survie 
+
+```{r}
+library(survminer)
+library(survival)
+ 
+data_complete <- data_complete %>%  mutate(surv_bin = ifelse(!is.na(date_mort2), 1, NA))
+surv_time <- survfit(Surv(duree_vie,surv_bin)~Traitement, data=data_complete) # survival object for graph
+ggsurvplot(surv_time, data = data_complete, facet.by = "sexe", legend.title = "Pupaison time")#KM plot
+
+
+surv_time_s <- survfit(Surv(duree_vie,surv_bin)~sexe, data=data_complete) # survival object for graph
+ggsurvplot(surv_time_s, data = data_complete, facet.by = "Traitement", legend.title = "Pupaison time")#KM plot
+
+summary(surv_time)# 100 obs lost due to missingness. NA= non observed, may I infer on the day before ? 
+
+median(surv_time)
+
+test_logrank <- survdiff(Surv(duree_vie,surv_bin) ~ Traitement, data = data_complete)
+test_logrank
+
+test_logrank_s <- survdiff(Surv(duree_vie,surv_bin) ~ sexe, data = data_complete)
+test_logrank_s
+
+
+library(coxme)
+# orange
+data_orange <- data_complete %>% filter(Experiment=="Orange") %>% droplevels()
+cox_orange <- coxme(Surv(duree_vie,surv_bin) ~ Traitement+sexe+(1|Replicat), data = data_orange)
+summary(cox_orange)
+
+# rouge 
+
+data_rouge <- data_complete %>% filter(Experiment=="Rouge") %>% droplevels()
+cox_rouge <- coxme(Surv(duree_vie,surv_bin) ~ Traitement*sexe+(1|Replicat), data = data_rouge)
+summary(cox_rouge)
+
+emmeans(cox_rouge, pairwise~Traitement+sexe, infer=TRUE, type="response")
+
+```
+
+# Nymphose
+```{r}
+
+data_complete <- data_complete %>%  mutate(nymph_bin = ifelse(!is.na(date_adulte2), 1, NA))
+surv_time <- survfit(Surv(duree_vie,surv_bin)~Traitement, data=data_complete) # survival object for graph
+ggsurvplot(surv_time, data = data_complete, facet.by = "sexe", legend.title = "Pupaison time")#KM plot
+
+```
+
+
+# Adulte 
+
+```{r}
+data_complete <- data_complete %>%  
+  mutate(dvpt_ad=case_when(
+    is.na(date_adulte2) & !is.na(date_mort2)  ~ 0,
+     !is.na(date_adulte2)  ~ 1,
+    TRUE~ NA),
+    duree_ad= date_adulte2 - date_eclosion2)
+data_orange <- data_orange %>%  
+  mutate(dvpt_ad=case_when(
+    is.na(date_adulte2) & !is.na(date_mort2)  ~ 0,
+     !is.na(date_adulte2)  ~ 1,
+    TRUE~ NA),
+    duree_ad= date_adulte2 - date_eclosion2)
+
+data_rouge <- data_rouge %>%  
+  mutate(dvpt_ad=case_when(
+    is.na(date_adulte2) & !is.na(date_mort2)  ~ 0,
+     !is.na(date_adulte2)  ~ 1,
+    TRUE~ NA),
+    duree_ad= date_adulte2 - date_eclosion2)
+
+surv_time <- survfit(Surv(duree_ad,dvpt_ad)~Traitement, data=data_complete) # survival object for graph
+ggsurvplot(surv_time, data = data_complete, facet.by = "sexe", legend.title = "Pupaison time")#KM plot
+
+median(surv_time)
+
+test_logrank_ad <- survdiff(Surv(duree_ad,dvpt_ad) ~ Traitement, data = data_complete)
+test_logrank_ad
+
+# only pour les rouge 
+cox_ad_rouge <- coxme(Surv(duree_ad,dvpt_ad) ~ Traitement+(1|Replicat), data = data_rouge)
+summary(cox_ad_rouge)
+
+# only pour les orang
+cox_ad_orange <- coxme(Surv(duree_ad,dvpt_ad) ~ Traitement+(1|Replicat), data = data_orange)
+summary(cox_ad_orange)
+
+
+# need to check residuals 
+emmeans(cox_ad_rouge, pairwise~Traitement, infer=TRUE, type="response")
+emmeans(cox_ad_orange, pairwise~Traitement, infer=TRUE, type="response")
+
+```
+

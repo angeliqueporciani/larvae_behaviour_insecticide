@@ -1,0 +1,500 @@
+---
+title: "Trajectories_analysis"
+author: "Angelique Porciani"
+format:
+  html:
+    code-fold: true
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+toc: true
+execute:
+  warning: false
+  message: false
+  cache: false
+---
+
+In this document I present analysis made to characterise trajectories of larvae with a data driven approach/ non supervised analysis instead.
+
+=\> Plot trajectories for 90% exploration.
+
+The objective of the trajectory analysis here is to go beyond the classical analysis made with parameters. For that, I want to apply HMM to see if some state could be evidenced from estimated speed, acceleration, turning angle and so on.
+
+First, I need to calculate these value for each time step defined, I plan to do the analysis for each second, maybe this assumption could be released after. I test parameters computations with trajR, that allow to compute more detailed metrics along time and moveR, based on trajR but with more option to work with data coming from tracking software as AnimalTA.
+
+I have 2 options to do this : moving average and sampling or rediscretisation to have equidistant timestep as HMM need that.
+
+Moreover, an other pb rise from preliminary test, turning angle at 0 cannot be estimated, then there is NA generation for numerous time. And this is not handable for HMM too.
+
+# Test with TrajR
+
+First, I extract values of speed by second and turn angle (radian) by second from position (X,Y) using trajR package.
+
+```{r}
+
+library(trajr)
+library(tidyverse)
+
+# Test avec data d'olivier (sans pb de tracking)
+## download
+dataOl <- read.csv2("./data_olivier/Results/Detailed_data/20230209-140234-C003i_ZEB772_0001.avi/Arena_0Ind0.csv") %>% 
+  mutate_if(is.character, as.numeric)
+
+str(dataOl)
+
+plot(dataOl$Time, dataOl$Speed, type="l")
+plot(dataOl$Time, dataOl$Dist_to_Tous_bords_0, type="l")
+
+sub_OL <-slice(dataOl, seq(1, nrow(dataOl), 30))
+
+plot(sub_OL$Time, sub_OL$Dist_to_Tous_bords_0, type="l")
+
+# estimation of some metrics and transfo in traj object 
+trj <- TrajFromCoords(
+  dataOl,
+  xCol = 2,
+  yCol = 3,
+  timeCol = "Time",
+  fps = 30,
+  spatialUnits = "cm",
+  timeUnits = "fps"
+)
+# plot trajectory 
+plot(trj)
+ 
+trjsub <- TrajFromCoords(
+  sub_OL,
+  xCol = 2,
+  yCol = 3,
+  timeCol = "Time",
+  fps = 1,
+  spatialUnits = "cm",
+  timeUnits = "fps"
+)
+plot(trjsub)
+```
+
+Une des solutions pour limiter le nombre de NA dans l'estimation, est de supprimer les données sans mouvements (permet meilleures estimation de paramètres) ou de faire un resampling puis calculs des paramètres (speed and co) sur cette base d'échantillonage.
+
+Avec ethoscopy pour les HMM ils remplacent les NA estimé lorsque pas de deplacement par la valeur précedente. Une fonction python permet de faire ça.
+
+```{r}
+
+# suppression des points ou ya pas de distance parcouru entre 2 time step (gros gros smoothing)
+trj2 <- TrajFromTrjPoints(trj, c(1, which(Mod(trj$Distance) >= 0.3)))
+plot(trj2)
+
+```
+
+```{r}
+
+#essai d'uniformiser le calcul du TA par seconde 
+
+resampled <- TrajResampleTime(trj, 1)
+plot(resampled)
+resampled5 <- TrajResampleTime(trj, 5)
+plot(resampled5)
+```
+
+Comparaison des 2 jeux de points :
+
+```{r}
+par(mar = c(5, 4, .5, .5))
+plot(trj, lwd = 2)
+lines(trj, pch = 11)
+points(resampled, col = "red", draw.start.pt = FALSE)
+
+```
+
+Estimation de la vitesse, l'acceleration et turning angle sur l'echantillon :
+
+```{r}
+
+derivresample<-TrajDerivatives(resampled)
+speedreS<-derivresample$speed
+speedreS<-c(0,speedreS)
+accelerationS<-derivresample$acceleration
+accelerationS<-c(0,0,accelerationS)
+Time<-derivresample$speedTimes
+Time<-c(0, Time)
+
+TAresampled<-trajr::TrajAngles(resampled,
+                               lag = 1)
+
+TAresampled<-c(0,0, TAresampled)
+
+# reunion de tout ca dans un DF 
+
+df_HMM_OR<-data.frame(Time=Time, Speed=speedreS, TurnAngle=TAresampled, Acceleration=accelerationS)# replacer les NA par des 0 
+hist(df_HMM_OR$Speed)
+hist(df_HMM_OR$Acceleration)
+hist(df_HMM_OR$TurnAngle)
+summary(df_HMM_OR$Acceleration)
+
+par(mfrow=c(2,2), mar = c(5, 4, .5, .5))
+plot(df_HMM_OR$Time,df_HMM_OR$Speed, type="l")
+plot(df_HMM_OR$Time,df_HMM_OR$Acceleration,type="l")
+plot(df_HMM_OR$Time,df_HMM_OR$TurnAngle, type="l")
+par(mfrow=c(1,1))
+
+ggplot(df_HMM_OR)+
+    geom_line(aes(x=Time, y=TurnAngle))+
+    geom_line(aes(x=Time, y=Acceleration), colour= "blue")
+
+acf(df_HMM_OR$Speed)
+acf(df_HMM_OR$TurnAngle[!is.na(df_HMM_OR$TurnAngle)])
+plot(df_HMM_OR$Speed, df_HMM_OR$TurnAngle, type="p")
+
+```
+
+On a maintenant un dataframe prêt à passer en HMM malgrès qq NA encore pour le TA. Mais qui probablement correspondent à des 0 mais du à des pb d'estimation mathematique (voir vignette trajR) ils sont mis en NA. Donc a voir si nous ça ne vaut pas le coups de les changer en 0 car on sait que c'est aussi interessant de le savoir qu'il n'y a pas de mouvement angulaire.
+
+## HMM test
+
+I first test with only two variables and 2 states with a gamma better assumption on speed and a VonMises distribution for Turning Angle.
+
+```{r}
+library(momentuHMM)
+# test with 2 variables (speed and TA)
+datHMM=prepData(df_HMM_OR, coordNames = NULL)
+datHMM2=prepData(sub_OL, type="UTM", coordNames = c("X","Y"))
+plotSpatialCov(datHMM2)
+dist = list(Speed = "gamma", TurnAngle = "vm")
+Par0_m1 <- list(Speed=c(0.01,0.5,0.02,1, 0.1, 0.1), TurnAngle=c(1, 3))
+
+m1 <- fitHMM(data = datHMM, nbStates = 2, dist = dist, Par0 = Par0_m1,
+             estAngleMean = list(angle=TRUE))
+m1
+
+dist2 = list(Speed = "gamma", TurnAngle = "wrpcauchy")
+Par0_m2 <- list(Speed=c(0.01,0.5,0.02,1, 0.1, 0.1), TurnAngle=c(0.3, 0.7))
+
+m2 <- fitHMM(data = datHMM, nbStates = 2, dist = dist2, Par0 = Par0_m2,
+             estAngleMean = list(angle=TRUE))
+m2
+AIC(m1,m2)
+
+# Ajout de l'acceleration 
+
+dist3 = list(Speed = "gamma", TurnAngle = "wrpcauchy", Acceleration = "norm")
+Par0_m3 <- list(Speed=c(0.01,0.5,0.02,1, 0.1, 0.1), TurnAngle=c(0.3, 0.7), 
+                Acceleration=c(0.0001, 1, 0.002, 0.2))
+
+m3 <- fitHMM(data = datHMM, nbStates = 2, dist = dist3, Par0 = Par0_m3,
+             estAngleMean = list(angle=TRUE))
+m3
+AIC(m1, m2, m3)
+
+
+dist4 = list(TurnAngle = "wrpcauchy", Acceleration = "norm")
+Par0_m4 <- list(TurnAngle=c(0.3, 0.7), 
+                Acceleration=c(0.0001, 0.8, 0.002, 0.2))
+
+m4 <- fitHMM(data = datHMM, nbStates = 2, dist = dist4, Par0 = Par0_m4,
+             estAngleMean = list(angle=TRUE))
+m4
+AIC(m1, m2, m3, m4)# on garde le 2 
+
+
+plot(m2, ask = FALSE)
+plotPR(m2)# plot pseudo residuals 
+plot(viterbi(m2),type="l")#State sequence 
+
+# decode most likely state sequence
+states <- viterbi(m2)
+# derive percentage of time spent in each state 
+#table(states)/nrow(datHMM)
+timeInStates(m2)
+plotStates(m2)
+
+simdata_m2 <- simData(m2, 600)
+simdata_m2 <- simData(model=m2, obsPerAnimal =600)
+plot(m2$data$Time,simdata_m2$Speed, type="h")
+lines(m2$data$Time,df_HMM_OR$Speed, type="h", col="red")
+plot(m2$data$Time,simdata_m2$TurnAngle, type="h")
+lines(m2$data$Time,df_HMM_OR$TurnAngle, type="h", col="red")
+
+# ajouter nombre de transition entre etat
+
+df_states <- as.data.frame(states)
+
+df_states %>% filter(states==1) %>% summarise(st1=n())-df_states %>% filter(states==2) %>% summarise(st1=n())
+ runs <- list(
+    values = df_states$states,
+    lengths = diff(c(0L, df_states$states)),
+    times = m2$data$Time
+    )
+  
+  active <- list(
+    lengths = runs$lengths[runs$values ==1],
+    times = runs$times[runs$values ==1]
+    )
+ list(
+    scores = runs$values,
+    active = active
+    #inactive = inactive
+    )
+seq_along(cumsum(df_states$states == 2))
+ runs = split(seq_along(df_states), cumsum(diff(df_states) > 1))
+ 
+  lengths[df_states$states == 2]
+  
+  
+  split_by_repetition <- function(vec) {
+  # Identify the indices where consecutive numbers are broken or a repetition changes
+  breaks <- c(0, which(diff(vec) != 0), length(vec))
+  
+  # Use those break points to split the vector into sublists
+  result <- lapply(seq_along(breaks)[-length(breaks)], function(i) {
+    vec[(breaks[i] + 1):breaks[i + 1]]
+  })
+  
+  return(result)
+}
+
+# Example vector
+my_vector <- c(1, 1, 2, 3, 3, 3, 5, 5, 7, 10, 10, 10)
+
+# Split into groups of consecutive numbers and repeated patterns
+result <- split_by_repetition(my_vector)
+print(result)
+# now keep only ones corresponding to 1 
+filtered_result_1 <- Filter(function(x) all(x == 1), result)
+  
+# same for 2 
+filtered_result_2 <- Filter(function(x) all(x == 2), result)
+
+# extract the size of the list (number of bouts) and max size/min size 
+res_Lb1<-max(unlist(lapply(result, length)))
+
+Lbout1 <- unlist(lapply(filtered_result_1, length))
+res_length_bout1 <-do.call(rbind,Lbout1) 
+max(res_length_bout1)#105
+
+Lbout2 <- lapply(filtered_result_2, length) 
+res_length_bout2 <-do.call(rbind,Lbout2) 
+max(res_length_bout2)#26 
+
+
+which.max(lapply(result, length))
+
+
+```
+
+202 transitions. 401 secondes dans l'état 1 et 199 dans l'état 2. (longeur max des bouts dans chaque état ?)
+
+::: callout-important
+Verifier les distributions et si les paramètres sont dans le bon ordre lors de la specification initiale. Test avec l'acceleration (quelle distri? ) Comparaison avec les estimations des paramètres de moveR.
+:::
+
+Ce qui semble ressortir de ce premier modèle testé sur des données avec qq NA sur les calculs d'angle (qui corresponde à des moment où il n'y a pas de mouvement) fonctionne avec les HMM. Détection de 2 états avec distri gamma pour les longeurs de pas à la seconde (d/s) et wrp Cauchy pour les TAngle.
+
+# Test with moveR
+
+```{r}
+
+library(MoveR)
+library(dplyr)
+library(tidyverse)
+
+#library(tidyverse)
+ID_selected <- read.csv("/home/angelique/ownCloud/Indeed/ID_selected_MoveR.csv")
+ID_rpi108 <- ID_selected %>% filter(str_detect(fullID3, ".108"))
+selIDrpi108 <- as.character(ID_rpi108$fullID3)
+
+
+#load data for 1 rpi and 1 replicate (here R08)
+rpi1_R08dat <- MoveR::readAnimalTA("./Data_larvae/data_larves_1hr/rpi1_10fps_R08_Corrected.csv", rawDat = FALSE)
+
+trackDat <- MoveR::setInfo(rpi1_R08dat, frameR = 10, scale = 1/37, imgRes = c(1080, 720)) 
+
+IDtest <- trackDat[4]
+
+```
+
+```{r}
+
+MoveR::drawTracklets(trackDat,
+                  imgRes = c(1080, 720),
+                  selId = selIDrpi108,
+                  timeWin = list(c(0, 3000)), 
+                  #colGrad = viridis::viridis(10))
+                  colId = "tracklets", 
+                  legend=T)
+                  #cex.leg = 0.75,
+                  #ncol.leg = 2)
+
+
+
+```
+
+Filter NA values
+
+```{r}
+filter.InfX <-
+  MoveR::filterFunc(
+    trackDat,
+    toFilter = "x.pos",
+    customFunc = function(x)
+      is.na(x)
+  )
+
+## first specify the second filter
+filter.InfY <-
+  MoveR::filterFunc(
+    trackDat,
+    toFilter = "y.pos",
+    customFunc = function(x)
+      is.na(x)
+  )
+
+## then merge the previously specifed filter
+filter.Inf <-
+  MoveR::mergeFilters(filters = list(filter.InfX, filter.InfY),
+                     cond = TRUE)
+
+# filter infinite values according to the previously specified filters
+# here we are also removing the tracklets that are shorter than 25 frames (1 second) using the minDur argument.
+trackDat.NAfilt <-
+  MoveR::filterTracklets(trackDat,
+                     filter = filter.Inf,
+                     splitCond = TRUE,
+                     minDur = MoveR::getInfo(trackDat, "frameR"))
+
+# display the summary of the filtering process
+str(trackDat.NAfilt[[1]])
+
+trackDat_filter <- trackDat.NAfilt[[2]]
+
+# save the cleaned dataset as .csv compressed as .gz
+data.table::fwrite(
+  MoveR::convert2List(trackDat_filter),
+paste(paste("./Data_larvae/data_larves_1hr/rpi1_10fps_R08_Corrected_cleanedData", sep = "/"
+  ), "csv", "gz", sep = "."),
+  sep = ";",
+  dec = ".",
+  na = "NA",
+)
+```
+
+```{r}
+
+trackDat2 <-
+  MoveR::analyseTracklets(trackDat_filter,
+                          customFunc = list(
+                            speed = function(x)
+                              MoveR::speed(x,
+                                           timeCol = "frame",
+                                           scale = 1),
+                            turnAngle = function(x)
+                              MoveR::turnAngle(
+                                x,
+                                unit = "radians",
+                                timeCol = "frame",
+                                scale = 1)
+                            # distTraveled = function(x)
+                            #   MoveR::distTraveled(x, 
+                            #                       step = 1)
+                            ))
+```
+
+Filter activ vs non actif
+
+```{r}
+
+trackDat_filter1D <-  convert2Tracklets(trackDat_filter[[1]])
+
+trackDat3 <-
+  MoveR::analyseTracklets(trackDat_filter1D,
+                      customFunc = list(
+                        speed = function(x)
+                          MoveR::speed(
+                            x,
+                            timeCol = "frame",
+                            scale = 1
+                          )
+                      ))
+
+
+filter.speed <-
+  MoveR::filterFunc(
+    trackDat3,
+    toFilter = "speed",
+    customFunc = function(x)
+       x >= 0.3
+  )
+
+# apply the filter on the data using the frame rate as minimum duration of the tracklets
+trackDat.speedfilt <-
+  MoveR::filterTracklets(trackDat3,
+                     filter.speed,
+                     splitCond = TRUE)
+
+str(trackDat.speedfilt[[1]])
+```
+
+```{r}
+
+
+# Import the sample data
+data_rpi108_filter <- data.table::fread(
+  "./Data_larvae/data_larves_1hr/rpi1_10fps_R08_Corrected_cleanedData.csv.gz",
+  sep = ";",
+  dec = ".")
+
+# convert the data to a list of tracklets - here the data were saved as a varList object (a list of variable) a more simple structure than tracklets
+data_rpi108_filter_a <- MoveR::convert2Tracklets(data_rpi108_filter , by = "trackletId")
+
+# compute speed, turn angle and traveled distance for each  
+trackDat2 <-
+  MoveR::analyseTracklets(data_rpi108_filter_a,
+                          customFunc = list(
+                            speed = function(x)
+                              MoveR::speed(x,
+                                           timeCol = "frame",
+                                           scale = 1),
+                            turnAngle = function(x)
+                              MoveR::turnAngle(
+                                x,
+                                unit = "radians",
+                                timeCol = "frame",
+                                scale = 1),
+                            distTraveled = function(x)
+                              MoveR::distTraveled(x, 
+                                                  step = 1)
+                            ))
+
+
+customFuncList <- list(
+
+  ### speed
+  slideMeanSpeed = function (x)
+    MoveR::slidWindow(x$speed,
+                      Tstep = 10,
+                      statistic = "mean",
+                      na.rm = T),
+  ## turning angles
+  slideMeanAngle = function (x)
+    MoveR::slidWindow(x$turnAngle,
+                      Tstep = 10,
+                      statistic = "mean",
+                      na.rm = T)
+)
+
+head(trackDat2)
+
+# compute the smoothed metrics over time
+TemporalRes_wtd_sec <- MoveR::temporalTrend(
+  trackDat2,
+  timeCol = "frame",
+  Tstep = 10 * 1,
+  sampling = 10 * 1,
+  customFunc = customFuncList,
+  wtd = TRUE
+)
+```
+
+Probleme pour estimer les temporal trend comme on a des saut à cause du tri des NA dans les etapes précedentes ... Smoothing par ID compliqué, peut se faire que par tracklet.

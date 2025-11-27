@@ -1,0 +1,236 @@
+---
+---crise 
+title: "Speed and Max bout length estimation : tuto"
+#subtitle: Part III - Tuberculosis Preventive Treatment Management
+author: "Angelique Porciani"
+date: last-modified
+date-format: "[Last Updated on] DD MMMM, YYYY"
+title-block-banner:  "#4E598C" 
+format:
+  html:
+    code-fold: true
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+toc: true
+execute:
+  warning: false
+  message: false
+  cache: false
+---
+
+One of the parameters of interest is the duration of inactivity (or resting period). For estimate it, I need to compute the speed by timestep (mili or second) and apply a threshold to classify the larvae as moving or not. Here it is a detailled step of the analysis for individual tracked with rpi1 and for replicate 8. I apply all these step on all individual tracked in other script or at the end of this one.
+
+The planned workflow is :
+
+1.  Clean data (remove NA values), tracking loss in other script (NA_filter)
+2.  Select individual keeped for analysis (Vid+LAM)
+3.  Estimates of speed on 10fps time step and transform in cm/s
+4.  Sampling by minutes
+5.  Calculate activity variable (1 if \>0.3cm/s)
+6.  Extract max bout length for activ and inactif state
+7.  Save global df (all rpi and replicate, selected individual) in order to bind it with metadata table and analyse it in the script (rpt_viz_ana_indsel)
+
+# 1. Load previously NA cleaned data
+
+```{r}
+library(MoveR)
+library(readr)
+library(tidyverse)
+library(zoo)
+
+# 1.Filter NA : other script, application of NA filter (loss of tracking) Import data already cleaned -----
+# Pb with this approach : separation by tracklet do not conserve frame order... loss of timline information. 
+rpi1_R08C<-data.table::fread(
+  "./Data_larvae/data_larves_1hr/rpi1_10fps_R08_Corrected_cleanedData.csv.gz",
+  sep = ";",
+  dec = ".")
+
+# selected individual for R08 
+ID_selected <- read.csv("../ID_selected_MoveR.csv")
+ID_rpi108 <- ID_selected %>% filter(str_detect(fullID3, ".108"))
+selIDrpi108 <- as.character(ID_rpi108$fullID3)
+
+# Select only individual that are alive until LAM 
+
+rpi1_R08C_sub<- rpi1_R08C %>% filter(identity %in% selIDrpi108)
+
+# Convert the data to a list of tracklets - here the data were saved as a varList object (a list of variable) a more simple structure than tracklets
+
+trackDat_R08_sub_Cleaned <- MoveR::convert2Tracklets(rpi1_R08C_sub, by = "identity")
+trackDat_R08 <- MoveR::convert2Tracklets(rpi1_R08C, by = "identity")
+# set some useful information
+trackDat_R08_sub_Cleaned <- MoveR::setInfo(trackDat_R08_sub_Cleaned, frameR = 10, scale = 1/37, imgRes = c(720, 1080)) 
+
+```
+
+Draw tracklets for the first 5 mins and selected individuals
+
+```{r}
+
+# draw tracklet 
+MoveR::drawTracklets(trackDat_R08_sub_Cleaned,
+                     imgRes = c(1080, 720),
+                     #selId = selIDrpi108,
+                     timeWin = list(c(0, 3000)), 
+                     #colGrad = viridis::viridis(10))
+                     colId = "identity", 
+                     legend=F)
+
+```
+
+# 2. Speed estimation on 10 fps rate
+
+And also mean speed (MA on 10 fps) and speed variance on 10 fps.
+
+```{r}
+trackDat_R08_sub_Cleaned <-
+  MoveR::analyseTracklets(trackDat_R08_sub_Cleaned,
+                          customFunc = list(
+                            speed = function(x)
+                              MoveR::speed(x,
+                                           timeCol = "frame",
+                                           scale = 1/37,# for in cm by second
+                                           frameR=10, 
+                                           timeU="s"), 
+                            ### speed
+                            slideMeanSpeed = function (y)
+                              MoveR::slidWindow(y$speed,
+                                                Tstep = 10, 
+                                                statistic = "mean", 
+                                                na.rm = T),
+                            ### speed variance
+                            slideVarSpeed = function (y)
+                              MoveR::slidWindow(y$speed,
+                                                Tstep = 10, 
+                                                statistic = "var", 
+                                                na.rm = T)
+                          ))
+
+
+```
+
+Quick visualisation :
+
+```{r}
+plot(trackDat_R08_sub_Cleaned[[1]]$speed, type='l')
+plot(trackDat_R08_sub_Cleaned[[1]]$slideMeanSpeed, type='l')
+
+```
+
+# 3. Resampling by 1 second
+
+```{r}
+# 2.B. Resampling tracklet to 1 second 
+trackDat_R08_sub_Cleaned<-
+  MoveR::analyseTracklets(trackDat_R08_sub_Cleaned,
+                          customFunc = list(
+                            # convert the time expressed in frame in second using a conversion factor of 25 frame per second
+                            TimeSec = function(x)
+                              x[["frame"]] / 10
+                          ))
+
+# resample the tracklets every 1 seconds
+trackDat_R08_sub_Cleaned_byS <-
+  MoveR::resampTracklets(trackDat_R08_sub_Cleaned, timeCol = "frame",  Tstep = 10)
+```
+
+Check size of time before and after sampling :
+
+```{r}
+
+
+## check the size of the tracklets
+trackSize <- unlist(lapply(trackDat_R08_sub_Cleaned, function(x)
+  nrow(x)))
+
+
+## check the size of the tracklets after resampling
+trackSize1s <- unlist(lapply(trackDat_R08_sub_Cleaned_byS, function(x)
+  nrow(x)))
+
+## Compare the tracklets size
+cbind(trackSize, trackSize1s)
+```
+
+Draw trajectory by second
+
+```{r}
+MoveR::drawTracklets(trackDat_R08_sub_Cleaned_byS,
+                     timeCol = "TimeSec",
+                     imgRes = c(1080, 720),
+                     #selId = selIDrpi108,
+                     timeWin = list(c(0, 300)), 
+                     #colGrad = viridis::viridis(10))
+                     colId = "identity", 
+                     legend=F)
+```
+
+Estimate activity
+
+```{r}
+
+trackDat_R08_sub_Cleaned_byS<-
+  MoveR::analyseTracklets(trackDat_R08_sub_Cleaned_byS,
+                          customFunc = list(
+                            activity1 = function(x)
+                            MoveR::activity1(x, 
+                                             speedCol = "speed", 
+                                             minSpeed = 0.3), 
+                            MaxSpeed=function(x) max(x[["speed"]], na.rm=TRUE)
+                          ))
+
+# seuil de 0.3 cm/s as in animalTA for now and corresponding to mean larval length
+
+```
+
+# 4. Extract max bout length for activ and inactif state
+
+Traitement des NA =\> replacement par la précedente valeur (discutable mais c'est ce qu'il font dans ethoscopy) a garder pour les HMM surtout pour les TAngle
+
+```{r}
+#function of bout extraction 
+split_by_repetition <- function(vec) {
+  if (sum(is.na(vec))>0){
+    vec <- na.locf(vec)
+  }
+  if (sum(is.na(vec))==0){
+    vec <- vec}
+  # Identify the indices where consecutive numbers are broken or a repetition changes
+  breaks <- c(0, which(diff(vec) != 0), length(vec))
+  
+  # Use those break points to split the vector into sublists
+  result <- lapply(seq_along(breaks)[-length(breaks)], function(i) {
+    vec[(breaks[i] + 1):breaks[i + 1]]
+  })
+  
+  # now keep only ones corresponding to 1 
+  filtered_active <- Filter(function(x) all(x == 1), result)
+  
+  # same for 0 
+  filtered_inactive <- Filter(function(x) all(x == 0), result)
+  
+  res_Lb1<-max(unlist(lapply(filtered_active, length)))
+  res_Lb_in<-max(unlist(lapply(filtered_inactive, length)))
+  return(c(res_Lb1, res_Lb_in))
+}
+
+# apply 
+res_Lb<-list()
+df_res <- data.frame(Max_bout_activ=NA, Max_bout_inactiv=NA, fullID3=NA)
+
+for (i in 1:length(trackDat_R08_sub_Cleaned_byS)){
+  res_Lb[[i]]<-split_by_repetition(trackDat_R08_sub_Cleaned_byS[[i]]$activity1)
+  df_res[i,] <- data.frame(Max_bout_activ=res_Lb[[i]][1], Max_bout_inactiv=res_Lb[[i]][2], fullID3=names(trackDat_R08_sub_Cleaned_byS)[i])
+}
+
+library(kableExtra)
+df_res %>% kbl(caption = "Estimation of max bout length for active and inactive for individuals of rpi1 R08", 
+               booktabs = T)%>%
+	kable_styling(full_width = F)
+
+str(df_res)
+```

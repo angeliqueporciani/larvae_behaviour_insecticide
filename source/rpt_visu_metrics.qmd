@@ -1,0 +1,691 @@
+---
+title: "Metrics Visualisation and classic analysis"
+author: "Angelique Porciani"
+format:
+  html:
+    code-fold: true
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+toc: true
+execute:
+  warning: false
+  message: false
+  cache: false
+---
+
+```{r}
+
+# load package----
+
+library(tidyverse)
+library(patchwork)
+library(kableExtra)
+library(gtsummary)
+library(FactoMineR)
+library(glmmTMB)
+library(factoextra)
+
+# load data ---- 
+
+res_by_ind_spatial <- read.delim(
+  "./Results_data_ATA/Results/Spatial/Element_All_borders_1.csv",
+                                 ,
+                                 sep = ";") %>% 
+  separate(Video, c("Camera", "FPS", "Replicat"), remove=FALSE)
+
+res_by_ind <- read.delim("./Results_data_ATA/Results/Results_by_ind.csv",
+                                 ,
+                                 sep = ";") %>% 
+  separate(Video, c("Camera", "FPS", "Replicat"), remove=FALSE) %>% 
+  select(!c(25:29))
+
+
+corres_ID <- read_csv2("./Corr_coord_data/corres_Arena_ID.csv") %>% 
+  select(c(1,2))
+
+corres_ttmt <- read_csv2("./corr_traitement_plaque.csv")%>% 
+  select(c(1:4))
+
+## ID attribution 
+corres_ID <- corres_ID %>% 
+  mutate(Arena=as.numeric(str_extract(Arena, "\\d.*")))
+
+res_by_ind <- res_by_ind %>%
+  inner_join(corres_ID) 
+
+res_by_ind <- res_by_ind %>% 
+  mutate(Plaque=as.numeric(str_extract(ID, "\\d+"))) %>% 
+  inner_join(corres_ttmt) %>% mutate(End_seq_min=as.numeric(End_seq)/60)
+                                    
+
+res_by_ind_spatial <- res_by_ind_spatial %>%
+  inner_join(corres_ID) 
+
+res_by_ind_spatial <- res_by_ind_spatial %>% 
+  mutate(Plaque=as.numeric(str_extract(ID, "\\d+"))) %>% 
+  inner_join(corres_ttmt)
+
+# taille des larves 
+
+taille_larv <- read.csv("../Data_larvae/20240820_mesures_larves.csv")
+
+```
+
+Ce script présente les analyses concernant les données video acquise dans le cadre du projet ANR INDeed. Les analyses sont ici basée sur tous les individus filmé dont la proportion de temps de tracking perdu est inférieur à 20%.
+
+## Data description
+
+```{r}
+
+res_by_ind %>% filter(Sequence=="General") %>% 
+  group_by(Traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes tracked by treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+res_by_ind %>% filter(Sequence=="General" & Prop_time_lost < 0.20) %>% 
+  group_by(Traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+res_by_ind %>% filter(Sequence=="General" & Prop_time_lost < 0.20) %>% 
+  group_by(Replicat, Traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each replicate and treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+
+```
+
+### Variables description
+
+Threshold for movement : Here the threshold is defined as the distance traveled between two frames higher than 0.3cm corresponding to the L3_L4 larvae body size.
+
+| Variable Name              | Description                                                                                                                                                                                                                                       | Units     |
+|---------------|------------------------------------------|---------------|
+| Prop_time_lost             | Count the proportion of frames for which the target was not detected (appears as “NA NA” in the data tables).                                                                                                                                     | No units  |
+| Average_Speed              | The displacement speed between each frame will be calculated and averaged for the whole video/or sequence length defined.                                                                                                                         | cm/frame  |
+| Average_Speed_Moving       | The displacement speed between each frame where the target is considered as moving (i.e. speed above the red movement threshold) will be calculated and averaged for the whole video.                                                             | cm/frame  |
+| Prop_time_moving           | Proportion of time the target is considered as moving given the defined threshold.                                                                                                                                                                | No units  |
+| Traveled_Dist              | Sum the total distance traveled by the target.                                                                                                                                                                                                    | cm        |
+| Traveled_Dist_Moving       | Sum the total distance traveled by the target when we only consider the frame during which the target is considered as moving.                                                                                                                    | cm        |
+| End_seq                    | Time needed to explore 90% of the surface. Length of the sequence. (Manually defined, other option are available in AnimalTA software). (s)                                                                                                       | second    |
+| Prop_time_inside           | Proportion of time inside the area, here in an area of 3mm along border.                                                                                                                                                                          | No units  |
+| Time_inside                | Number of frame (s?) inside 3mm close to border.                                                                                                                                                                                                  | seconds ? |
+| Nb_entries                 | Nb of the entries in the area of 3mm close to border                                                                                                                                                                                              | No units  |
+| Exploration_absolute_value | surface in cm2 explored by the larvae in a given time (here 1 hour or End_seq time length).                                                                                                                                                       | cm2       |
+| Meander                    | Indicator of the sinusoity of the trajectories during the sequence recorded. Estimation of the meander of the trajectories. This value is the average of the change in direction (turning angle) divided by the distance traveled for each frame. |           |
+| Max_speed                  | To calculate from raw data                                                                                                                                                                                                                        |           |
+| longest_rest               | To calculate from raw data                                                                                                                                                                                                                        |           |
+
+: Variables description
+
+Need precision about :
+
+-   The method for speed average ? (moyenne glissante ? geométrique ?)
+
+-   Units of Time inside frame or second ?
+
+-   Latency ??
+
+Information are available in software AnimalTA.
+
+### Larvae size
+
+```{r}
+
+boxplot(taille_larv$mesure)
+summary(taille_larv$mesure)
+taille_larv %>% drop_na() %>% select(mesure) %>% 
+  summarise(variance=var(mesure), sdm=sd(mesure))
+
+var(taille_larv$mesure)
+
+```
+
+## Visualisation of metrics for 1 hour recording
+
+The data presented are data for the whole recording and for individuals with less than 20% of time lost during recording.
+
+```{r}
+
+data_temp=subset(res_by_ind, Prop_time_lost < 0.20 & Sequence=="General")
+loop.list <- names(data_temp[, c(14:20)])
+plot_list <- list()
+
+for (n in loop.list)
+  {
+  plot_list[[n]] <- ggplot(data=data_temp)+
+    geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="Traitement"), width = 0.15, position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="Traitement", y=n,
+                    fill = "Traitement",
+                    colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none")+
+    ylab(paste(n))+
+    scale_color_manual(
+      values = c("#648FFF", "#FE6100"))+
+    scale_fill_manual(
+      values = c("#648FFF", "#FE6100"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:4], nrow=2)
+wrap_plots(plot_list[5:7], nrow=2)
+
+
+# Table of mean, sd and median 
+
+data_temp %>% 
+  tbl_summary(
+    include = loop.list,
+    by=Traitement,
+    type = loop.list ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+```
+
+## Visualisation of metrics for 90% exploration surface
+
+In this part are presented metrics for only the period taken to explore 90% of the area. As previously, individual with more than 20% of time lost are removed.
+
+```{r}
+res_by_ind_spatial <- res_by_ind_spatial %>% mutate(End_seq=res_by_ind$End_seq)
+data_temp2 <- res_by_ind_spatial %>% filter(Prop_time_lost < 0.20 &
+                                Sequence == "Seq_0") 
+
+loop.list2 <- names(data_temp2[, c(9:12,14:18,20,21,29)])
+plot_list <- list()
+
+for (n in loop.list2)
+{
+  plot_list[[n]] <- res_by_ind_spatial %>% filter(Prop_time_lost < 0.20 &
+                                                    Sequence == "Seq_0") %>%
+    ggplot()+
+    geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="Traitement"), width = 0.15, position = position_dodge(0.9)) +
+    geom_violin(aes_string(x="Traitement", y=n,
+                           fill = "Traitement",
+                           colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none")+
+    ylab(paste(n))+
+    scale_color_manual(
+      values = c("#648FFF", "#FE6100"))+
+    scale_fill_manual(
+      values = c("#648FFF", "#FE6100"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:6], nrow=2)
+wrap_plots(plot_list[7:12], nrow=2)
+
+data_temp2 %>% 
+  tbl_summary(
+    include = loop.list2,
+    by=Traitement,
+    type = loop.list2 ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+```
+
+In addition, I want to see if there is a correlation between the time spent to explore and the distance traveled.
+
+```{r}
+
+# correlation between time to reach 90% of explored area and traveled distance 
+
+res_by_ind_spatial %>% filter(Prop_time_lost < 0.20 &
+                                Sequence == "Seq_0") %>%
+  ggplot() +
+  geom_point(aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement, fill=Traitement),
+    method = lm,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))
+
+res_by_ind_spatial %>% filter(Prop_time_lost < 0.20 &
+                                Sequence == "Seq_0") %>%
+  ggplot() +
+  geom_point(aes(x = Average_Speed_moving, y = End_seq, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Average_Speed_moving, y = End_seq, colour = Traitement, fill=Traitement),
+    method = loess,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))
+
+
+res_by_ind_spatial %>% filter(Prop_time_lost < 0.20 &
+                                                    Sequence == "Seq_0") %>%
+    ggplot()+
+    geom_jitter(aes(x=Traitement, y=Traveled_Dist/End_seq, color=Traitement)) +
+    geom_boxplot(aes(x=Traitement, y=Traveled_Dist/End_seq, color=Traitement), width = 0.15, position = position_dodge(0.9)) +
+    geom_violin(aes(x=Traitement, y=Traveled_Dist/End_seq,
+                           fill = Traitement,
+                           colour=Traitement),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none")+
+    ylab(paste("Traveled_Dist/End_seq"))+
+    scale_color_manual(
+      values = c("#648FFF", "#FE6100"))+
+    scale_fill_manual(
+      values = c("#648FFF", "#FE6100"))
+```
+
+Correlation between speed and meander (expecting a negative correlation).
+
+```{r}
+
+res_by_ind %>% filter(Prop_time_lost < 0.20 &
+                                Sequence == "General") %>%
+  ggplot() +
+  geom_point(aes(x = Average_Speed_Moving, y = Meander_moving, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Average_Speed_Moving, y = Meander_moving, colour = Traitement, fill=Traitement),
+    method = lm,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))
+```
+
+Correlation between traveled distance and Meander
+
+```{r}
+
+res_by_ind %>% filter(Prop_time_lost < 0.20 & Sequence == "General") %>% 
+  ggplot() +
+  geom_point(aes(x = Traveled_Dist, y = Meander_moving, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Traveled_Dist, y = Meander_moving, colour = Traitement, fill=Traitement),
+    method = lm,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))+ggtitle("Relation between meander when
+                                                              moving and Traveled distance(total)")
+
+res_by_ind %>% filter(Prop_time_lost < 0.20 & Sequence == "General"&Meander_moving>400) %>% 
+  ggplot() +
+  geom_point(aes(x = Traveled_Dist, y = Meander_moving, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Traveled_Dist, y = Meander_moving, colour = Traitement, fill=Traitement),
+    method = lm,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))+ggtitle("Relation between meander when moving and Traveled distance(total) without lower meander individual")
+
+res_by_ind %>% filter(Prop_time_lost < 0.20 & Sequence == "General"&Meander_moving<400) %>% 
+  ggplot() +
+  geom_point(aes(x = Traveled_Dist, y = Meander_moving, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Traveled_Dist, y = Meander_moving, colour = Traitement, fill=Traitement),
+    method = lm,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))+ggtitle("Relation between meander when moving and Traveled distance(total) without lower meander individual")
+```
+
+Same as before but with traveled distance when moving.
+
+```{r}
+
+res_by_ind %>% filter(Prop_time_lost < 0.20 & Sequence == "General") %>% 
+  ggplot() +
+  geom_point(aes(x = Traveled_Dist_Moving, y = Meander_moving, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Traveled_Dist_Moving, y = Meander_moving, colour = Traitement, fill=Traitement),
+    method = lm,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))+ggtitle("Relation between meander when moving and Traveled distance moving(total)")
+
+res_by_ind %>% filter(Prop_time_lost < 0.20 & Sequence == "General"&Meander_moving>400) %>% 
+  ggplot() +
+  geom_point(aes(x = Traveled_Dist_Moving, y = Meander_moving, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Traveled_Dist_Moving, y = Meander_moving, colour = Traitement, fill=Traitement),
+    method = lm,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))+ggtitle("Relation between meander when moving and Traveled distance(total) without lower meander individual")
+
+res_by_ind %>% filter(Prop_time_lost < 0.20 & Sequence == "General"&Meander_moving<400) %>% 
+  ggplot() +
+  geom_point(aes(x = Traveled_Dist_Moving, y = Meander_moving, colour = Traitement)) +
+  # geom_smooth(
+  #   aes(x = Traveled_Dist_Moving, y = End_seq, colour = Traitement),
+  #   method = loess,
+  #   se = FALSE,
+  #   linewidth = 0.5,
+  #   linetype = "dashed"
+  # ) +
+  geom_smooth(
+    aes(x = Traveled_Dist_Moving, y = Meander_moving, colour = Traitement, fill=Traitement),
+    method = lm,
+    se = TRUE,
+    linewidth = 0.5
+  ) +
+  theme_light() + scale_color_manual(values = c("#648FFF", "#FE6100")) +
+  scale_fill_manual(values = c("#648FFF", "#FE6100"))+ggtitle("Relation between meander when moving and Traveled distance(total) without lower meander individual")
+```
+
+## Analysis
+
+### Relation between co-variable
+
+### Correlation
+
+```{r}
+
+library(corrplot)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+res_by_ind %>% filter(Sequence=="General") %>% select(all_of(loop.list)) %>% cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper",
+             addCoef.col = "black", order="hclust")
+
+
+res_by_ind_spatial %>% filter(Sequence=="Seq_0") %>%  select(all_of(loop.list2)) %>% cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper",
+             addCoef.col = "black")
+```
+
+### ACP
+
+First graph : 1 hour recording with all value for meander variable.
+
+2nd graph : 1hour recording with values \<10000 for meander variable.
+
+3rd graph : 90% of exploration.
+
+Co variable relation.
+
+```{r}
+library(corrplot)
+
+df_ACP<- res_by_ind %>% filter(Sequence=="General"& Prop_time_lost<0.2) %>% select(c(all_of(loop.list),"Traitement")) %>% 
+  mutate_if(is.character, as.factor)
+
+df_ACP %>% plot()
+
+# drop absurd values of meander (pb of parameter estimation to check)
+df_ACPb<- res_by_ind %>% filter(Sequence=="General"& Prop_time_lost<0.2 & Meander<10000) %>% select(c(all_of(loop.list),"Traitement")) %>% 
+  mutate_if(is.character, as.factor)
+
+df_ACPb %>% plot()
+
+df_ACP2<- res_by_ind_spatial %>% filter(Sequence=="Seq_0"& Prop_time_lost<0.2) %>% select(c(all_of(loop.list2),"Traitement")) %>% 
+  mutate_if(is.character, as.factor)
+
+df_ACP2 %>% plot()
+
+pca1<-PCA(df_ACP[,-8], graph=FALSE)
+pca1b<-PCA(df_ACPb[,-8], graph=FALSE)
+pca2<-PCA(df_ACP2[,-13], graph=FALSE)
+
+# ACP1 <- res_by_ind %>% filter(Sequence=="General"& Prop_time_lost<0.2) %>% select(c(all_of(loop.list),"Traitement")) %>% 
+#   mutate_if(is.character, as.factor) %>% PCA()
+
+#ACP2<- res_by_ind_spatial %>% filter(Sequence=="Seq_0" & Prop_time_lost<0.2) %>% select(all_of(loop.list2)) %>% PCA()
+
+
+```
+
+```{r}
+
+fviz_eig(pca1, addlabels = TRUE) 
+res <- get_pca_var(pca1)
+corrplot(res$cos2)
+
+fviz_eig(pca1b, addlabels = TRUE) 
+res2 <- get_pca_var(pca1b)
+corrplot(res2$cos2)
+
+fviz_eig(pca2, addlabels = TRUE) 
+res3 <- get_pca_var(pca2)
+corrplot(res3$cos2)
+```
+
+Variable representation :
+
+```{r}
+fviz_pca_var(pca1, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+fviz_pca_var(pca1b, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+fviz_pca_var(pca2, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+
+```
+
+Individual representation :
+
+```{r}
+fviz_pca_ind(pca1,
+             label = "none", # hide individual labels
+             habillage =  df_ACP$Traitement, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+fviz_pca_ind(pca1b,
+             label = "none", # hide individual labels
+             habillage =  df_ACPb$Traitement, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+
+fviz_pca_ind(pca2,
+             label = "none", # hide individual labels
+             habillage =  df_ACP2$Traitement, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+```
+
+Interpretation of ACP results :
+
+I retrieve some absurd values (extremely high values) to improve ACP results for 1 hours recording analysis.
+
+Insecticides effect : The insecticide seems not be involved in movement modification with parameter used here.
+
+Description of the movement : for 1 hour recording, it seems that the movement could be divided mainly by the 1st axe that could be resumed by proportion in movement, speed and distance traveled and 2nd axes mainly consider the meander of the movement.
+
+In summary, lazy, sinuous and slow movement vs active, straight and fast movement.
+
+### GLMM
+
+#### Parameters 1h recording
+
+Parameters that we can consider they follow a gaussian (approx) for parameters extracted from 1hour recording.
+
+```{r}
+
+library(glmmTMB)
+library(broom.mixed)
+
+data_glm <- res_by_ind%>% filter(Prop_time_lost < 0.20 &
+                                            Sequence == "General") %>% 
+  mutate_if(is.character, as.factor)
+
+RLS_table <- data_glm %>% 
+  dplyr::select(loop.list[-1]) %>%  # enleve la var binomiale
+  map(~glmmTMB(.x ~ Traitement, data = data_glm))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of linear model for each parameters", booktabs = T) %>%
+	kable_styling(full_width = T)
+
+RLS_table
+
+
+```
+
+Binomial variable : prop_time moving
+
+```{r}
+
+PTM <- glmmTMB(Prop_time_moving~Traitement, data=data_glm, family=binomial(link = "logit"))
+summary(PTM)
+
+```
+
+In conclusion, with these actual data, we were not able to evidence difference between parameter expression of mosquitoes exposed to permethrin at 0.002mg/L vs control.
+
+\*Improvements : increase number of individual, taking into account length of larvae for calculated parameters and control meander extreme values (why? exclusion of individuals?) \*
+
+#### Parameters exploration of 90% of the surface.
+
+```{r}
+
+
+data_temp2 <- data_temp2%>% 
+  mutate_if(is.character, as.factor)
+
+loop.list2 <- names(data_temp2[, c(9:12,14:18,20,21,29)])
+
+RLS_table_2 <- data_temp2 %>% 
+  dplyr::select(loop.list2[-c(1,2,4,5,11)]) %>%  # enleve la var binomiale
+  map(~glmmTMB(.x ~ Traitement, data = data_temp2))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of linear model for each parameters (90% explo)", booktabs = T) %>%
+	kable_styling(full_width = T)
+
+RLS_table_2
+```
+
+Prop time moving and inside :
+
+```{r}
+
+PTM2 <- glmmTMB(Prop_time_moving~Traitement, data=data_temp2, family=binomial(link = "logit"))
+summary(PTM2)
+
+PTI <- glmmTMB(Prop_time_inside~Traitement, data=data_temp2, family=binomial(link = "logit"))
+summary(PTI)
+
+```
+
+Nb of entries
+
+```{r}
+
+Nb_ent <- glmmTMB(Nb_entries~Traitement, data=data_temp2, family=nbinom1(link="log"))
+summary(Nb_ent)
+
+```
+
+## Etat d'avancement de l'analyse
+
+-   Extraction des paramètres principaux fournis par AnimalTA = ok
+
+-   Tri des individus et des outliers = fait
+
+-   Visualisation des résultats en unidimensionnel et multidimensionel (classique) = fait
+
+-   Analyse stat simple de comparaison entre les groupes = fait.
+
+*Conclusion au 09/09* :\
+Pas d'effet du traitement mis en evidence sur les paramètres de caractérisation du mouvement et de l'activité. Caractérisation de l'activité sur la vitesse, distance, prop de temps en mouvement et sinuosité.
+
+*Améliorations*: Ajouter des paramètres pour mieux décrire le mouvement/exploration/activité (mieux définir ces termes, pas forcement les mêmes paramètres associés): \* vitesse max \* nombre de changement de direction (a voir) \* longeur des periodes de repos ( a voir avec les HMM maybe ?) bouts caracterisation.
+
+Diviser l'analyse en phase d'acclimatation (5 min/90% explored surface) et reste de l'enregistrement. A refaire sous AnimalTA, permettra d'avoir la prop de temps dans certaines zone en phase d'acclim et phase plus longue.
+
+Appliquer une permanova pour voir diff entre traité vs control même si j'attend rien et faire la même chose avec male femelle.
+
+Editer ex de trajectoire.
+
+ACP : analyse non suppervisée pour caracteriser le mouvement en groupe. Kmeans peut être. Approche individuelle??
+
+=\> passer à la caracterisation du mouvement par HMM (data driven approach).

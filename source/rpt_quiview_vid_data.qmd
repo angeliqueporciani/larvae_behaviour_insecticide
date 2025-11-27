@@ -1,0 +1,123 @@
+---
+title: "Raw video data quick view"
+author: "Angelique Porciani"
+format:
+  html:
+    code-fold: true
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+toc: true
+execute:
+  warning: false
+  message: false
+  cache: false
+---
+
+# First view of data over 1 hour of recording of An.gambiae KdrKis larvae
+
+```{r}
+
+# Load package ----
+
+library(tidyverse) 
+library(MoveR) 
+library(kableExtra)
+
+# import data ----
+corres_ID <- read_csv2("./Corr_coord_data/corres_Arena_ID.csv") %>% dplyr::select(c(1,2)) 
+res_by_ind_ATA <- read.delim("./Results_data_ATA/Results/Results_by_ind.csv",sep=";")
+
+metadata <- read_csv("./Data_larvae/20240807_meta_data.csv")
+```
+
+```{r}
+
+# data management ----
+## unique ID attribution
+
+corres_ID <- corres_ID %>% mutate(Arena=as.numeric(str_extract(Arena, "\\d.*")))
+
+res_by_ind_ATA <- res_by_ind_ATA %>% inner_join(corres_ID) %>% mutate(
+  Replicat = str_extract(Video, "R\\d*"),
+  RPI = str_extract(Video, "rpi\\d*"),
+  # ArenaN = str_extract(Arena, "\\d.\*"),
+  fullID = str_c(RPI, Replicat, ID),
+  fullID2 = str_c(RPI, Arena, Replicat, ID)
+) #%\>% select(!20:26)
+
+ggplot(res_by_ind_ATA)+ geom_point(aes(x=fullID2, y=Prop_time_lost, colour=fullID2))+ geom_hline(yintercept = 0.2, linetype="dashed")+ theme(axis.text.x = element_blank(), axis.ticks = element_blank(), legend.position = "none")
+
+```
+
+Number of individuals with proportion of time lost \> 20%.
+
+```{r}
+
+res_by_ind_ATA %>% filter(Sequence=="General" & Prop_time_lost>0.20) %>% nrow()
+
+```
+
+49 individuals need to be corrected
+
+49/240 = 20% de "mauvais" tracking
+
+# Id of individuals that need to be corrected on animal TA software.
+
+```{r}
+
+res_by_ind_ATA %>% filter(Prop_time_lost>0.20) %>% select(fullID2, Video, Prop_time_lost) %>% arrange(Prop_time_lost) %>% 
+  kbl(caption = "Id of individuals with >20% proportion of data lost", booktabs = T)%>% kable_styling(full_width = T)
+```
+
+# Individuals present in video AND LAM
+
+```{r}
+
+metadata <- metadata %>% separate(ID, c("RPI", "ID2")) 
+metadata <- metadata %>%  mutate(RPI=str_to_lower(RPI), fullID=paste0(RPI,ID2))
+
+# tri des id qui sont en LAM 
+# suppresion des ID qui sont pas dans les LAM et virer le replicat 05
+
+metadata_sub <-  metadata %>% drop_na(position_LAM) %>% filter(replicat!=5)
+
+metadata_sub%>% 
+  group_by(traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+```
+
+# Fusion avec les database video
+
+```{r}
+data_LAM_vid <- inner_join(metadata_sub, res_by_ind_ATA)
+data_LAM_vid%>% filter(Sequence=="General") %>% drop_na(traitement) %>% 
+  group_by(traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+```
+
+# Total des ID gardés
+
+```{r}
+
+data_LAM_vid <- data_LAM_vid %>% filter(Sequence=="General" & Prop_time_lost < 0.20) 
+
+data_LAM_vid %>%
+   group_by(traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each treatment and LAM data acquisition", booktabs = T)%>%
+	kable_styling(full_width = T)
+nrow(data_LAM_vid)
+
+# ggplot(data_LAM_vid)+ geom_point(aes(x=fullID, y=Prop_time_lost, colour=fullID))+ geom_hline(yintercept = 0.2, linetype="dashed")+ theme(axis.text.x = element_blank(), axis.ticks = element_blank(), legend.position = "none")
+
+```
+
+Nombre d'individu perdus :
+
+240-157=83 34% de perte totale (video tracking mauvais (20%)+ mortalité entre larve et adulte jusqu'au LAM (15%)).

@@ -1,0 +1,1734 @@
+---
+title: "Metrics Visualisation and analysis on individuals video+LAM"
+#subtitle: Part III - Tuberculosis Preventive Treatment Management
+author: "Angelique Porciani"
+date: last-modified
+date-format: "[Last Updated on] DD MMMM, YYYY"
+title-block-banner:  "#4E598C" 
+format:
+  html:
+    code-fold: true
+    html-math-method: katex
+    code-tools: true
+    self-contained: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+toc: true
+execute:
+  warning: false
+  message: false
+  cache: true
+---
+
+```{r}
+
+# load package----
+
+library(tidyverse)
+library(patchwork)
+library(kableExtra)
+library(gtsummary)
+library(FactoMineR)
+library(glmmTMB)
+library(factoextra)
+
+# load data ---- 
+
+res_by_ind_spatial <- read.delim("./Data_larvae/data_larves_1hr/Results/Spatial/Element_Tous_bords_0.csv",
+                                 ,
+                                 sep = ";") %>% 
+  separate(Video, c("Camera", "FPS", "Replicat"), remove=FALSE)
+
+res_by_ind <- read.delim("./Data_larvae/data_larves_1hr/Results/Results_by_ind.csv",
+                                 ,
+                                 sep = ";") %>% 
+  separate(Video, c("Camera", "FPS", "Replicat"), remove=FALSE) %>% 
+  select(!c(25:29))
+
+
+corres_ID <- read_csv2("./Corr_coord_data/corres_Arena_ID.csv") %>% 
+  select(c(1,2))
+
+corres_ttmt <- read_csv2("./corr_traitement_plaque.csv")%>% 
+  select(c(1:4))
+
+## ID attribution 
+corres_ID <- corres_ID %>% 
+  mutate(Arena=as.numeric(str_extract(Arena, "\\d.*")))
+
+res_by_ind <- res_by_ind %>%
+  inner_join(corres_ID) 
+
+res_by_ind <- res_by_ind %>% 
+  mutate(Plaque=as.numeric(str_extract(ID, "\\d+"))) %>% 
+  inner_join(corres_ttmt) %>% mutate(End_seq_min=as.numeric(End_seq)/60) %>% 
+  mutate(fullID = str_c(Camera, Replicat, ID))
+                                    
+
+res_by_ind_spatial <- res_by_ind_spatial %>%
+  inner_join(corres_ID) 
+
+res_by_ind_spatial <- res_by_ind_spatial %>% 
+  mutate(Plaque=as.numeric(str_extract(ID, "\\d+"))) %>% 
+  inner_join(corres_ttmt)%>% mutate(fullID = str_c(Camera, Replicat, ID))
+
+# taille des larves 
+
+taille_larv <- read.csv("./Data_larvae/20240820_mesures_larves.csv")
+
+# metadata 
+metadata <- read_csv("./Data_larvae/20240807_meta_data.csv")
+
+metadata <- metadata %>% separate(ID, c("Camera", "ID2")) 
+metadata <- metadata %>%  mutate(Camera=str_to_lower(Camera), fullID=paste0(Camera,ID2))
+metadata$date_adulte <- as.Date(metadata$date_adulte, format="%d-%m")
+metadata$date_mort <- as.Date(metadata$date_mort, format="%d-%m")
+metadata$date_nymphe <- as.Date(metadata$date_nymphe, format="%d-%m")
+metadata$date_eclosion <- as.Date(metadata$date_eclosion, format="%d-%m")
+
+# tri des id qui sont en LAM 
+# suppresion des ID qui sont pas dans les LAM et virer le replicat 05
+metadata_sub <-  metadata %>% drop_na(position_LAM) %>% filter(replicat!=5) %>% 
+  mutate(Time_mort_ad=as.numeric(difftime(date_mort,date_adulte, units="days")), Time_pup=as.numeric(difftime(date_nymphe,date_eclosion, units="days")))
+
+data_LAM_vid_spatial <- inner_join(metadata_sub, res_by_ind_spatial)
+
+data_LAM_vid <- inner_join(metadata_sub, res_by_ind, by=c("Camera","fullID"))
+
+data_LAM_vid <- data_LAM_vid %>% mutate(fullID2=paste0(Arena, fullID)) %>% 
+  mutate(fullID3=gsub("[^0-9]", "", as.character(fullID2))
+)
+
+res_bout_Mspeed<- read_csv("./Data_larvae/data_larves_1hr/res_bouts_Mspeed.csv") %>% 
+  dplyr::select(!1) %>% mutate_at(vars(Max_bout_activ, Max_bout_inactiv, Max_Speed), as.numeric)
+
+data_LAM_vid <-data_LAM_vid %>% inner_join(res_bout_Mspeed)
+
+saveRDS(data_LAM_vid,"./Data_larvae/data_Larve.rds")
+
+```
+
+Ce script présente les analyses concernant les données video acquise dans le cadre du projet ANR INDeed. Les analyses sont ici basée sur tous les individus filmé dont la proportion de temps de tracking perdu est inférieur à 20% et qui dont l'activité en LAM a pu être enregistrée.
+
+# Video acquisition
+
+The video were acquiried with a setup described in detail in supplementary data. Basically, it is based on RapsberryPi 4 and a camera IR cut with an objective of 2.8cm focus. Image are acquired at 10fps rate.
+
+# Video tracking parameters
+
+All the tracking was made using AnimalTA software (source). The step of plate installation was removed from the video. The length of the video was limited to 3600 s for each replicate. Relative background substraction method was applied (hungarian algo I think, need to validate this). Arena were defined by hand.
+
+Parameters needed to do the tracking with the software :
+
+-   color correction : none, keep original color.
+
+-   correction of light : yes
+
+-   Threshold : 19-30 depending on the video
+
+-   Background : relative background substraction with individual darker than background.
+
+-   Max distance : 3.5-3.7 cm
+
+-   Erosion/dilatation : 0
+
+-   Surface : 56.8cm2
+
+-   Nb ID by arena : 1
+
+# Analysis
+
+## Analysis description
+
+This document contains a description of the video data of larvae Anopheles gambiae s.s. kdr mutant L3-L4 stage.
+
+Analysis are based on parameters that described the navigatory behaviour of larvae during 1 hour in a circle containers (3cm diameter). Analysis was made on 3 sequences : 1/ complete 1 hour, 2/ time needed to explore 90% of the surface and 3/ 90% of exploration to the end of recording (3600s). All video were cropped to have the same time lenght.
+
+Analysis is divided in two mains parts :
+
+\- Analysis of results of navigation in the total of the container surface
+
+\- Analysis of results in the surface close to border (1 cm to the border).
+
+## Number of individuals
+
+```{r}
+
+data_LAM_vid%>% filter(Sequence=="General") %>% drop_na(traitement) %>% 
+  group_by(traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes larvae tracked and LAM acquisition for each treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+
+data_LAM_vid%>% filter(Sequence=="General" & Prop_time_lost < 0.20) %>%
+  group_by(traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking and LAM acquisition for each treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+data_LAM_vid %>% filter(Sequence=="General" & Prop_time_lost < 0.20) %>% 
+  group_by(Replicat, Traitement) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each replicate and treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+# data_LAM_vid %>% filter(Sequence=="General" & Prop_time_lost < 0.20) %>% 
+#   dplyr::select(Replicat, Traitement, fullID3) %>% 
+#   # kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each replicate and treatment", booktabs = T)%>%
+# 	#kable_styling(full_width = T) %>% 
+#   data_frame() %>% 
+#   write.csv("../ID_selected_MoveR.csv")
+
+data_LAM_vid%>% filter(Sequence=="General" & Prop_time_lost < 0.20) %>% 
+  group_by(Traitement, sexe) %>% summarise(Nmosquitoes=n()) %>% 
+  kbl(caption = "Number of mosquitoes with less than 20% of time lost during tracking for each replicate and treatment", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+```
+
+## Number of individual alive until LAM for each treatement, sexe and replicate
+
+```{r}
+# estimation of number alive until LAM for water and permethrin exposition 
+
+metadata %>% dplyr::filter(replicat!=5 & replicat!=7) %>% dplyr::group_by(replicat,traitement) %>% 
+  dplyr::filter(LAMetsurv==1) %>% summarise(n=n()) %>%   kbl(caption = "Number of mosquitoes alive until LAM recording", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+metadata %>% dplyr::filter(replicat!=5 & replicat!=7) %>% dplyr::group_by(replicat,traitement, sexe) %>% 
+  dplyr::filter(LAMetsurv==1) %>% summarise(n=n()) %>%   kbl(caption = "Number of mosquitoes alive until LAM recording", booktabs = T)%>%
+	kable_styling(full_width = T)
+
+metadata %>% dplyr::filter(replicat!=5 & replicat!=7) %>% dplyr::group_by(traitement, sexe) %>% 
+  dplyr::filter(LAMetsurv==1) %>% summarise(n=n()) %>%   kbl(caption = "Number of mosquitoes alive until LAM recording", booktabs = T)%>%
+	kable_styling(full_width = T)
+```
+
+## Variables description
+
+Parameters are calculated for all displacement inside the containers (named after dataset_all) and inside the zone defined along border of each containers (spatial). I choose a zone of 1cm to the border. Graphics and analysis were presented for each set of parameters (all or spatial).
+
+Threshold for movement : Here the threshold is defined as the distance traveled between two frames higher than 0.3cm corresponding to the L3_L4 larvae body size.
+
+| Variable Name              | Description                                                                                                                                                                                                                                       | Units     | Type of bhvr                                                                                                                         | Dataset |
+|----------|-------------------------------|----------|--------------|----------|
+| Prop_time_lost             | Count the proportion of frames for which the target was not detected (appears as “NA NA” in the data tables).                                                                                                                                     | No units  | NA                                                                                                                                   | Both    |
+| Average_Speed              | The displacement speed between each frame will be calculated and averaged for the whole video/or sequence length defined.                                                                                                                         | cm/frame  | activity                                                                                                                             | Both    |
+| Average_Speed_Moving       | The displacement speed between each frame where the target is considered as moving (i.e. speed above the red movement threshold) will be calculated and averaged for the whole video.                                                             | cm/frame  |                                                                                                                                      | Both    |
+| Prop_time_moving           | Proportion of time the target is considered as moving given the defined threshold.                                                                                                                                                                | No units  | activity                                                                                                                             | Both    |
+| Traveled_Dist              | Sum the total distance traveled by the target.                                                                                                                                                                                                    | cm        | activity/exploration                                                                                                                 | Both    |
+| Traveled_Dist_Moving       | Sum the total distance traveled by the target when we only consider the frame during which the target is considered as moving.                                                                                                                    | cm        | activity.                                                                                                                            | Both    |
+| End_seq                    | Time needed to explore 90% of the surface. Length of the sequence. (Manually defined, other option are available in AnimalTA software). (s)                                                                                                       | second    | exploration                                                                                                                          | Ind_all |
+| Prop_time_inside           | Proportion of time inside the area, here in an area of 3mm along border.                                                                                                                                                                          | No units  | foraging                                                                                                                             | Spatial |
+| Time_inside                | Number of frame (s?) inside 3mm close to border.                                                                                                                                                                                                  | seconds ? | foraging                                                                                                                             | Spatial |
+| Nb_entries                 | Nb of the entries in the area of 3mm close to border                                                                                                                                                                                              | No units  | foraging                                                                                                                             | Spatial |
+| Exploration_absolute_value | surface in cm2 explored by the larvae in a given time (here 1 hour or End_seq time length).                                                                                                                                                       | cm2       | exploration (time dependant)/ not really relevant for our study as we let enough time given the container to explore all the surface | ind_all |
+| Meander                    | Indicator of the sinusoity of the trajectories during the sequence recorded. Estimation of the meander of the trajectories. This value is the average of the change in direction (turning angle) divided by the distance traveled for each frame. |           | foraging                                                                                                                             | Both    |
+| Meander_moving             | same as Meander but only for movement                                                                                                                                                                                                             |           | Foraging ?                                                                                                                           | Both    |
+| Latency                    | The latency to approach the border(s) at less than the indicated distance (1cm here)                                                                                                                                                              |           | Rest ?                                                                                                                               | Spatial |
+| Max_bout_inactiv           | Maximal length (in frame) without movement \>0.3cm/s                                                                                                                                                                                              |           | physiological/activity intensity                                                                                                     | ind_all |
+| Max_speed                  | Maximal speed recorded (cm/s)                                                                                                                                                                                                                     |           | physiological/activity intensity                                                                                                     | ind_all |
+
+: Variables description
+
+Need precision about :
+
+-   The method for speed average ? (moyenne glissante ? geométrique ?)
+
+-   Units of Time inside frame or second ?
+
+All detailed informations are available in software AnimalTA and associated guidelines.
+
+## All surface analysis
+
+### 1 hour recording
+
+The data presented are data for the whole recording and for individuals with less than 20% of time lost during recording.
+
+### Treatment effect
+
+```{r}
+
+data_temp=subset(data_LAM_vid, Prop_time_lost < 0.20 & Sequence=="General") %>% mutate(replicat2=as.factor(replicat))
+
+loop.list <- c("Prop_time_moving", "Average_Speed", "Average_Speed_Moving", "Traveled_Dist", "Meander", "Traveled_Dist_Moving", "Meander_moving", "Max_bout_inactiv", "Max_Speed")
+
+plot_list <- list()
+
+for (n in loop.list)
+  {
+  plot_list[[n]] <- ggplot(data=data_temp)+
+    geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="Traitement"), width = 0.15, position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="Traitement", y=n,
+                    fill = "Traitement",
+                    colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none", axis.title.x = element_blank())+
+    ylab(paste(n))+
+    scale_color_manual(
+      values = c("#648FFF", "#FE6100"))+
+    scale_fill_manual(
+      values = c("#648FFF", "#FE6100"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:6], nrow=3)
+ggsave("./Data_larvae/1h_allsurf_1-6.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[7:9], nrow=2)
+ggsave("./Data_larvae/1h_allsurf_7-9.jpeg", width = 30, height = 20, units = "cm")
+
+
+for (n in loop.list)
+  {
+  plot_list[[n]] <- ggplot(data=data_temp)+
+    geom_jitter(aes_string(x="Traitement", y=n, color="replicat2")) +
+    #geom_boxplot(aes_string(x="Traitement", y=n, color="replicat"), width = 0.15, position = position_dodge(0.9)) +
+     # geom_violin(aes_string(x="Traitement", y=n,
+     #                fill = "Traitement",
+     #                colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "right", axis.title.x = element_blank())+
+    ylab(paste(n))
+
+}
+
+wrap_plots(plot_list[1:6], nrow=3)
+wrap_plots(plot_list[7:9], nrow=2)
+
+
+# Table of mean, sd and median 
+
+tbl_1h_allsurf <- data_temp %>% 
+  tbl_summary(
+    include = loop.list,
+    by=Traitement,
+    type = loop.list ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+
+tbl_1h_allsurf
+#gt::gtsave(filename="tbl_1h_allsurf.txt")
+```
+
+### Interaction
+
+```{r}
+
+plot_list <- list()
+
+for (n in loop.list)
+  {
+  plot_list[[n]] <- ggplot(data=subset(data_temp, sexe!="NA"))+
+    #geom_jitter(aes_string(x="Traitement", y=n, color="sexe", group="sexe")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="sexe"), width = 0.15,position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="Traitement", y=n,
+                    fill = "sexe",
+                    colour="sexe"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "right", axis.title.x = element_blank())+
+    ylab(paste(n))+
+   scale_color_manual(
+    values = c("deeppink4", "deepskyblue4"))+
+  scale_fill_manual(
+    values = c("deeppink4", "deepskyblue4"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:6], nrow=3)
+ggsave("./Data_larvae/1h_allsurf_1-6_interaction.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[7:9], nrow=2)
+ggsave("./Data_larvae/1h_allsurf_7-9_interaction.jpeg", width = 30, height = 20, units = "cm")
+
+
+
+```
+
+### Sexe effect only
+
+```{r}
+
+plot_list <- list()
+
+for (n in loop.list)
+  {
+  plot_list[[n]] <- ggplot(data=subset(data_temp, sexe!="NA"))+
+    # geom_jitter(aes_string(x="Traitement", y=n, color="sexe"), position=position_jitter(0.5)) +
+    geom_boxplot(aes_string(x="sexe", y=n, color="sexe"), width = 0.15,position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="sexe", y=n,
+                    fill = "sexe",
+                    colour="sexe"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "right", axis.title.x = element_blank())+
+    ylab(paste(n))+
+   scale_color_manual(
+    values = c("deeppink4", "deepskyblue4"))+
+  scale_fill_manual(
+    values = c("deeppink4", "deepskyblue4"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:6], nrow=3)
+ggsave("./Data_larvae/1h_allsurf_1-6_sexe_effect.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[7:9], nrow=2)
+ggsave("./Data_larvae/1h_allsurf_7-9_sexe_effect.jpeg", width = 30, height = 20, units = "cm")
+
+# Table of mean, sd and median 
+
+data_temp %>% 
+  tbl_summary(
+    include = loop.list,
+    by=sexe,
+    type = loop.list ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+
+```
+
+#### Correlation between survival time, pupation time and Max speed
+
+```{r}
+ggplot(data_temp)+
+  geom_point(aes(x=Time_mort_ad, y=Max_Speed))
+
+cor.test(data_temp$Time_mort_ad, data_temp$Max_Speed)
+
+# pupation 
+ggplot(data_temp)+
+  geom_point(aes(x=Time_pup, y=Max_Speed))
+
+cor.test(data_temp$Time_pup, data_temp$Max_Speed)
+
+
+```
+
+#### Pupation time and rate
+
+```{r}
+
+sum_tot <- metadata %>% filter(replicat!=c(5,7)) %>% group_by(traitement) %>% summarise(Nnymph_tot=n())
+
+sum_nymph <- metadata %>% filter(replicat!=c(5,7)& passage_nymphe==1) %>% group_by(traitement) %>% summarise(Nnymph=n())
+
+res_prop_nymph <- left_join(sum_nymph, sum_tot) %>% mutate(p_nymph=Nnymph/Nnymph_tot)
+
+res_prop_nymph
+# par replicat
+sum_tot <- metadata %>% filter(replicat!=5 &replicat!=7) %>% group_by(traitement, replicat) %>% summarise(Nnymph_tot=n())
+
+sum_nymph <- metadata %>% filter(replicat!=5 &replicat!=7 & passage_nymphe==1) %>% group_by(traitement, replicat) %>% summarise(Nnymph=n())
+
+res_prop_nymph <- left_join(sum_nymph, sum_tot) %>% mutate(p_nymph=Nnymph/Nnymph_tot)
+
+res_prop_nymph
+```
+
+#### Analysis
+
+```{r}
+
+# prop time moving 
+
+ptmov <- glmmTMB(Prop_time_moving~traitement+(1|Replicat), data=data_temp, family=binomial(link="logit"))
+summary(ptmov)
+
+## Interaction 
+ptmov_int <- glmmTMB(Prop_time_moving~traitement*sexe+(1|Replicat), data=data_temp, family=binomial(link="logit"))
+
+summary(ptmov_int)
+Anova(ptmov_int)
+
+## no interaction, no effect of treatment neither sex
+
+# Average speed 
+avg_speed <- glmmTMB(Average_Speed~traitement*sexe+(1|Replicat), data=data_temp)
+summary(avg_speed)
+Anova(avg_speed)
+## no interaction, no effect of treatment neither sex
+
+avg_speed_mov <- glmmTMB(Average_Speed_Moving~traitement*sexe+(1|Replicat), data=data_temp)
+summary(avg_speed_mov)
+Anova(avg_speed_mov)
+## no interaction, no effect of treatment neither sex
+
+# Traveled distance 
+
+trvl <- glmmTMB(Traveled_Dist~traitement*sexe+(1|Replicat), data=data_temp)
+summary(trvl)
+Anova(trvl)
+## no interaction, no effect of treatment neither sex
+
+trvl_moving <- glmmTMB(Traveled_Dist_Moving~traitement*sexe+(1|Replicat), data=data_temp)
+summary(trvl_moving)
+Anova(trvl_moving)
+## no interaction, no effect of treatment neither sex
+
+# Max bout inactiv in frame 
+
+hist(data_temp$Max_bout_inactiv)
+
+## poisson
+MB_inactiv <- glmmTMB(Max_bout_inactiv~traitement*sexe+(1|Replicat), data=data_temp, family = poisson(link = "log"))
+
+summary(MB_inactiv)
+Anova(MB_inactiv)
+
+## gaussian 
+
+MB_inactiv_gaus <- glmmTMB(Max_bout_inactiv~traitement*sexe+(1|Replicat), data=data_temp, family = gaussian)
+
+MB_inactiv_gamma <- glmmTMB(Max_bout_inactiv~traitement*sexe+(1|Replicat), data=data_temp, family = Gamma)
+
+MB_inactiv_nb <- glmmTMB(Max_bout_inactiv~traitement*sexe+(1|Replicat), data=data_temp, family =nbinom1)
+
+AIC(MB_inactiv,MB_inactiv_gaus, MB_inactiv_gamma, MB_inactiv_nb)
+# nbinom seems to fit better 
+
+library(DHARMa)
+sim <- simulateResiduals(MB_inactiv_nb)
+
+plot(sim)# thats ok 
+
+summary(MB_inactiv_nb)
+Anova(MB_inactiv_nb)
+## no interaction, no effect of treatment neither sex
+
+# Max speed 
+hist(data_temp$Max_Speed)
+
+Max_speed <- glmmTMB(Max_Speed~traitement*sexe+(1|Replicat), data=data_temp, family =gaussian)
+summary(Max_speed)
+Anova(Max_speed)
+
+Max_speed_gamma <- glmmTMB(Max_Speed~traitement*sexe+(1|Replicat), data=data_temp, family =Gamma)
+summary(Max_speed)
+Anova(Max_speed)
+
+AIC(Max_speed, Max_speed_gamma)# gamma fit better 
+
+## no interaction, no effect of treatment neither sex
+
+
+```
+
+### 90% exploration
+
+In this part are presented metrics for only the period taken to explore 90% of the area. As previously, individual with more than 20% of time lost are removed.
+
+```{r}
+
+
+data_temp2 <- data_LAM_vid %>% filter(Prop_time_lost < 0.20 &
+             Sequence == "Seq_90")
+
+
+loop.list2 <- c("Prop_time_moving", "Traveled_Dist", "Traveled_Dist_Moving", "Average_Speed", "Average_Speed_Moving", 
+                "Meander_moving", "Exploration_absolute_value", "End_seq_min")
+
+
+plot_list <- list()
+
+for (n in loop.list2)
+{
+  plot_list[[n]] <- 
+    ggplot(data_temp2)+
+    geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="Traitement"), width = 0.15, position = position_dodge(0.9)) +
+    geom_violin(aes_string(x="Traitement", y=n,
+                           fill = "Traitement",
+                           colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none")+
+    ylab(paste(n))+
+    scale_color_manual(
+      values = c("#648FFF", "#FE6100"))+
+    scale_fill_manual(
+      values = c("#648FFF", "#FE6100"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:4], nrow=2)
+ggsave("./Data_larvae/0-90p_allsurf_1-4_ttmt_effect.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[5:8], nrow=2)
+ggsave("./Data_larvae/0-90p_allsurf_5-8_ttmt_effect.jpeg", width = 30, height = 20, units = "cm")
+
+data_temp2 %>% 
+  tbl_summary(
+    include = loop.list2,
+    by=Traitement,
+    type = loop.list2 ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+```
+
+#### Interaction
+
+```{r}
+
+
+plot_list <- list()
+
+for (n in loop.list2)
+  {
+  plot_list[[n]] <- ggplot(data=subset(data_temp2, sexe!="NA"))+
+    # geom_jitter(aes_string(x="Traitement", y=n, color="sexe", group="sexe"), position=position_jitter(0.5)) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="sexe"), width = 0.15,position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="Traitement", y=n,
+                    fill = "sexe",
+                    colour="sexe"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "right", axis.title.x = element_blank())+
+    ylab(paste(n))+
+   scale_color_manual(
+    values = c("deeppink4", "deepskyblue4"))+
+  scale_fill_manual(
+    values = c("deeppink4", "deepskyblue4"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:4], nrow=2)
+ggsave("./Data_larvae/0-90p_allsurf_1-4_interaction.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[5:8], nrow=2)
+ggsave("./Data_larvae/0-90p_allsurf_5-8_interaction.jpeg", width = 30, height = 20, units = "cm")
+
+
+```
+
+#### Sexe effect
+
+```{r}
+
+plot_list <- list()
+
+for (n in loop.list2)
+  {
+  plot_list[[n]] <- ggplot(data=subset(data_temp2, sexe!="NA"))+
+    # geom_jitter(aes_string(x="Traitement", y=n, color="sexe", group="sexe"), position=position_jitter(0.5)) +
+    geom_boxplot(aes_string(x="sexe", y=n, color="sexe"), width = 0.15,position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="sexe", y=n,
+                    fill = "sexe",
+                    colour="sexe"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "right", axis.title.x = element_blank())+
+    ylab(paste(n))+
+   scale_color_manual(
+    values = c("deeppink4", "deepskyblue4"))+
+  scale_fill_manual(
+    values = c("deeppink4", "deepskyblue4"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:4], nrow=2)
+ggsave("./Data_larvae/0-90p_allsurf_1-4_sexe.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[5:8], nrow=2)
+ggsave("./Data_larvae/0-90p_allsurf_5-8_sexe.jpeg", width = 30, height = 20, units = "cm")
+
+data_temp2 %>% 
+  tbl_summary(
+    include = loop.list2,
+    by=sexe,
+    type = loop.list2 ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+
+```
+
+#### Analysis
+
+```{r}
+# prop time moving 
+hist(data_temp2$Prop_time_moving)
+hist(sqrt(data_temp2$Prop_time_moving))
+shapiro.test(sqrt(data_temp2$Prop_time_moving))
+
+ptmov_int_gaus <- glmmTMB(sqrt(Prop_time_moving)~traitement*sexe+(1|Replicat), data=data_temp2)
+summary(ptmov_int_gaus)
+
+ptmov_int_gaus <- glmmTMB(Prop_time_moving~traitement*sexe+(1|Replicat), data=data_temp2)
+
+summary(ptmov_int_gaus)
+Anova(ptmov_int_gaus, type="3")
+
+ptmov <- glmmTMB(Prop_time_moving~traitement+(1|Replicat), data=data_temp2, family=binomial(link="logit"))
+summary(ptmov)
+
+## Interaction 
+ptmov_int <- glmmTMB(Prop_time_moving~traitement*sexe+(1|Replicat), data=data_temp2, family=binomial(link="logit"))
+
+
+ptmov_int <- glmmTMB(Prop_time_moving~traitement*sexe+(1|Replicat), data=data_temp2, family=binomial(link="logit"))
+summary(ptmov_int)
+Anova(ptmov_int, type="3")
+
+## no interaction, no effect of treatment neither sex
+
+# Average speed 
+hist(data_temp2$Average_Speed)# gaussian approx
+
+avg_speed <- glmmTMB(Average_Speed~traitement*sexe+(1|Replicat), data=data_temp2)
+summary(avg_speed)
+Anova(avg_speed, type="3")
+## interaction significant ! 
+#library(DHARMa)
+sim <- simulateResiduals(avg_speed)
+
+plot(sim)# thats ok 
+
+# res 
+emm_avg_speed <- emmeans::emmeans(avg_speed, pairwise~traitement*sexe, infer=TRUE)
+emm_avg_speed$contrasts
+
+# avg speed moving 
+avg_speed_mov <- glmmTMB(Average_Speed_Moving~traitement*sexe+(1|Replicat), data=data_temp2)
+summary(avg_speed_mov)
+Anova(avg_speed_mov, type="3")
+## no interaction, no effect of treatment neither sex
+
+# Traveled distance 
+
+trvl <- glmmTMB(Traveled_Dist~traitement*sexe+(1|Replicat), data=data_temp2)
+summary(trvl)
+Anova(trvl, type="3")
+
+trvl_2 <- glmmTMB(Traveled_Dist~traitement+(1|Replicat), data=data_temp2)
+
+AIC(trvl, trvl_2)# pas de comparaison possible pas mm df ... 
+
+summary(trvl_2)
+Anova(trvl_2)
+
+## effect of treatment ? 
+
+trvl_moving <- glmmTMB(Traveled_Dist_Moving~traitement*sexe+(1|Replicat), data=data_temp2)
+summary(trvl_moving)
+Anova(trvl_moving, type="3")
+
+trvl_moving_2 <- glmmTMB(Traveled_Dist_Moving~traitement+(1|Replicat), data=data_temp2)
+Anova(trvl_moving_2)
+summary(trvl_moving_2)
+
+## effect of treatment but very low... interpretation, if it is in pxl no intersest because only 5 px of difference in other word, nothing. If in cm, 5 cm means what ? 
+
+# End sequence in min
+
+hist(data_temp2$End_seq_min)
+hist(data_temp2$End_seq)
+summary(data_temp2$End_seq)
+
+## Gamma 
+end_seq_mi <- glmmTMB(End_seq_min~traitement*sexe+(1|Replicat), data=data_temp, family = Gamma)
+end_seq <- glmmTMB(End_seq~traitement*sexe+(1|Replicat), data=data_temp, family = Gamma)
+
+sim <- simulateResiduals(end_seq_mi)# error message, infinite values ... 
+#plot(sim)
+summary(end_seq_mi)
+Anova(end_seq_mi, type="3")
+Anova(end_seq, type="3")
+
+emm_end_seq_minute <- emmeans::emmeans(end_seq_mi, pairwise~traitement|sexe, infer=TRUE, type="response")
+emm_end_seq_minute$contrasts
+
+emm_end_seq_minute2 <- emmeans::emmeans(end_seq_mi, pairwise~sexe|traitement, infer=TRUE)
+emm_end_seq_minute2$contrasts
+
+```
+
+### 90% exploration to the end of recording
+
+#### Treatment effect
+
+```{r}
+
+data_temp3 <- data_LAM_vid %>% filter(Prop_time_lost < 0.20 &
+             Sequence == "Seq_all") %>% mutate(Lseq=End_seq-Beginning_seq)
+
+
+loop.list3 <- c("Prop_time_moving", "Traveled_Dist", "Traveled_Dist_Moving", "Average_Speed", "Average_Speed_Moving", 
+                "Meander_moving", "Exploration_absolute_value", "Lseq")
+
+
+# loop.list3 <- c("Latency", "Prop_time_inside", "Time_inside", "Nb_entries", "Prop_time_moving", "Traveled_Dist", "Traveled_Dist_Moving", "Average_Speed", "Average_Speed_moving", 
+#                 "Meander_moving", "Exploration_absolute_value", "Lseq")
+
+
+plot_list <- list()
+
+for (n in loop.list3)
+{
+  plot_list[[n]] <- 
+    ggplot(data_temp3)+
+    geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="Traitement"), width = 0.15, position = position_dodge(0.9)) +
+    geom_violin(aes_string(x="Traitement", y=n,
+                           fill = "Traitement",
+                           colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none")+
+    ylab(paste(n))+
+    scale_color_manual(
+      values = c("#648FFF", "#FE6100"))+
+    scale_fill_manual(
+      values = c("#648FFF", "#FE6100"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:4], nrow=2)
+ggsave("./Data_larvae/90p-end_allsurf_1-4_ttmt.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[5:8], nrow=2)
+ggsave("./Data_larvae/90p-end_allsurf_5-8_ttmt.jpeg", width = 30, height = 20, units = "cm")
+
+data_temp3 %>% 
+  tbl_summary(
+    include = loop.list3,
+    by=Traitement,
+    type = loop.list3 ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+```
+
+#### Interaction effect
+
+```{r}
+
+plot_list <- list()
+
+for (n in loop.list3)
+  {
+  plot_list[[n]] <- ggplot(data=subset(data_temp3, sexe!="NA"))+
+    # geom_jitter(aes_string(x="Traitement", y=n, color="sexe", group="sexe"), position=position_jitter(0.5)) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="sexe"), width = 0.15,position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="Traitement", y=n,
+                    fill = "sexe",
+                    colour="sexe"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "right", axis.title.x = element_blank())+
+    ylab(paste(n))+
+   scale_color_manual(
+    values = c("deeppink4", "deepskyblue4"))+
+  scale_fill_manual(
+    values = c("deeppink4", "deepskyblue4"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:4], nrow=2)
+ggsave("./Data_larvae/90p-end_allsurf_1-4_interaction.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[5:8], nrow=2)
+ggsave("./Data_larvae/90p-end_allsurf_5-8_interaction.jpeg", width = 30, height = 20, units = "cm")
+
+```
+
+#### Sexe effect
+
+```{r}
+
+plot_list <- list()
+
+for (n in loop.list3)
+  {
+  plot_list[[n]] <- ggplot(data=subset(data_temp3, sexe!="NA"))+
+     geom_jitter(aes_string(x="sexe", y=n, color="sexe", group="sexe"), position=position_jitter(0.5)) +
+    geom_boxplot(aes_string(x="sexe", y=n, color="sexe"), width = 0.15,position = position_dodge(0.9)) +
+     geom_violin(aes_string(x="sexe", y=n,
+                    fill = "sexe",
+                    colour="sexe"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "right", axis.title.x = element_blank())+
+    ylab(paste(n))+
+   scale_color_manual(
+    values = c("deeppink4", "deepskyblue4"))+
+  scale_fill_manual(
+    values = c("deeppink4", "deepskyblue4"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:4], nrow=2)
+ggsave("./Data_larvae/90p-end_allsurf_1-4_sexe.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[5:8], nrow=2)
+ggsave("./Data_larvae/90p-end_allsurf_5-8_sexe.jpeg", width = 30, height = 20, units = "cm")
+
+
+```
+
+#### Analysis
+
+```{r}
+
+hist(data_temp3$Prop_time_moving)
+hist(sqrt(data_temp3$Prop_time_moving))
+shapiro.test(sqrt(data_temp3$Prop_time_moving))
+
+ptmov_int_gaus3 <- glmmTMB(sqrt(Prop_time_moving)~traitement*sexe+(1|Replicat), data=data_temp3)
+summary(ptmov_int_gaus3)
+
+## no interaction, no effect of treatment neither sex
+
+# Average speed 
+hist(data_temp3$Average_Speed)# gaussian approx
+
+avg_speed3 <- glmmTMB(Average_Speed~traitement*sexe+(1|Replicat), data=data_temp3)
+summary(avg_speed3)
+Anova(avg_speed3, type="3")
+## no interaction, no effect of treatment neither sex
+
+# avg speed moving 
+avg_speed_mov3 <- glmmTMB(Average_Speed_Moving~traitement*sexe+(1|Replicat), data=data_temp3)
+summary(avg_speed_mov3)
+Anova(avg_speed_mov3, type="3")
+## no interaction, no effect of treatment neither sex
+
+# Traveled distance 
+
+trvl <- glmmTMB(Traveled_Dist~traitement*sexe+(1|Replicat), data=data_temp3)
+summary(trvl)
+Anova(trvl, type="3")
+## no interaction, no effect of treatment neither sex
+
+trvl_moving <- glmmTMB(Traveled_Dist_Moving~traitement*sexe+(1|Replicat), data=data_temp3)
+summary(trvl_moving)
+Anova(trvl_moving, type="3")
+## no interaction, no effect of treatment neither sex
+
+
+# End sequence in min
+
+hist(data_temp3$End_seq_min)
+hist(data_temp2$End_seq)
+summary(data_temp2$End_seq)
+
+## Gamma 
+end_seq_mi <- glmmTMB(End_seq_min~traitement*sexe+(1|Replicat), data=data_temp, family = Gamma)
+end_seq <- glmmTMB(End_seq~traitement*sexe+(1|Replicat), data=data_temp, family = Gamma)
+
+sim <- simulateResiduals(end_seq_mi)# error message, infinite values ... 
+#plot(sim)
+summary(end_seq_mi)
+Anova(end_seq_mi, type="3")
+Anova(end_seq, type="3")
+
+emm_end_seq_minute <- emmeans::emmeans(end_seq_mi, pairwise~traitement|sexe, infer=TRUE, type="response")
+emm_end_seq_minute$contrasts
+
+emm_end_seq_minute2 <- emmeans::emmeans(end_seq_mi, pairwise~sexe|traitement, infer=TRUE)
+emm_end_seq_minute2$contrasts
+
+```
+
+### Graphical vizu of difference between 0-90% of explored surface and 90% to the end of recording
+
+If there are no difference, maybe only take the whole recording for doing ACP and multivariate analysis
+
+```{r}
+
+
+ggplot(data_LAM_vid%>% filter(Sequence!="General"))+
+  geom_point(aes(x = Sequence, y=Average_Speed, colour= Traitement))+
+  geom_line(aes(x = Sequence, y=Average_Speed, colour= Traitement, group=fullID3))+
+  theme_bw()
+
+ggplot(data_LAM_vid%>% filter(Sequence!="General"))+
+  geom_point(aes(x = Sequence, y=Prop_time_moving, colour= Traitement))+
+  geom_line(aes(x = Sequence, y=Prop_time_moving, colour= Traitement, group=fullID3))+
+  theme_bw()
+
+
+ggplot(data_LAM_vid%>% filter(Sequence!="General"))+
+  geom_boxplot(aes(x = Sequence, y=Prop_time_moving, colour= Traitement))+
+  #geom_line(aes(x = Sequence, y=Prop_time_moving, colour= Traitement, group=fullID3))+
+  theme_bw()
+
+
+ggplot(data_LAM_vid%>% filter(Sequence!="General"))+
+  geom_boxplot(aes(x = Sequence, y=Average_Speed, colour= Traitement))+
+  #geom_line(aes(x = Sequence, y=Prop_time_moving, colour= Traitement, group=fullID3))+
+  theme_bw()
+```
+
+### Univariate analysis
+
+Analysis of impact of permethrin exposition on each parameters calculated.
+
+#### Parameters 90% exploration
+
+Parameters that we can consider they follow a gaussian (approx) for parameters extracted from 90% needed to explore environment. Given the mean estimation and SD, statistical test are almost not needed to confirm that there are no difference between groups. I have just done lm or glm for code simplicity, but classic t-test or equivalent are also an option.
+
+```{r}
+
+library(glmmTMB)
+library(broom.mixed)
+
+data_glm <- data_temp2 %>% 
+  mutate_if(is.character, as.factor)
+
+data_glm %>% 
+  dplyr::select(loop.list2[-1]) %>%  # enleve la var binomiale
+  map(~hist(.x), xlab=names(.x))
+
+RLS_table <- data_glm %>% 
+  dplyr::select(loop.list2[-1]) %>%  # enleve la var binomiale
+  map(~glmmTMB(.x ~ Traitement+ (1|Replicat), data = data_glm))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of linear model for each parameters", booktabs = T) %>%
+	kable_styling(full_width = T)
+
+RLS_table
+
+RLS_table2 <- data_glm %>% 
+  dplyr::select(loop.list2) %>%  # enleve la var binomiale
+  map(~wilcox.test(.x ~ Traitement, data = data_glm))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ #dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of Mann-Whitney for each parameters", booktabs = T) %>%
+	kable_styling(full_width = T)
+
+RLS_table2
+# sexe effect 
+RLS_table_sexe <- data_glm %>% 
+  dplyr::select(loop.list2[-1]) %>%  # enleve la var binomiale
+  map(~glmmTMB(.x ~ sexe+ (1|Replicat), data = data_glm))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of linear model for each parameters", booktabs = T) %>%
+	kable_styling(full_width = T)
+RLS_table_sexe
+
+
+RLS_table_interaction <- data_glm %>% 
+  dplyr::select(loop.list2[-1]) %>%  # enleve la var binomiale
+  map(~glmmTMB(.x ~ Traitement*sexe+ (1|Replicat), data = data_glm))
+#   map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+#  dplyr::filter(term!="(Intercept)") %>% 
+#   arrange(p.value) %>% 
+#   kbl(caption = "Coefficient of linear model for each parameters", booktabs = T) %>%
+# 	kable_styling(full_width = T)
+library(car)
+
+RLS_table_interaction %>% map(~Anova(.x))
+
+
+
+
+```
+
+Binomial variable : prop_time moving
+
+```{r}
+# glm 
+PTM <- glmmTMB(Prop_time_moving~Traitement + (1|Replicat), data=data_glm, family=binomial(link = "logit"))
+summary(PTM)
+
+```
+
+For the time needed to explore 90% of the surface, that could be considered as acclimation of exploration period, a difference between group is only evidenced for proportion of time moving and Average speed. Permethrin exposed individual seems to move more often and faster than individual only exposed to water.
+
+#### Parameters for 90% of exploration to the end of the recording.
+
+```{r}
+
+
+
+data_temp3 <- data_temp3%>% 
+  mutate_if(is.character, as.factor)
+
+data_temp3 %>% 
+  dplyr::select(loop.list3) %>%  
+  map(~hist(.x), xlab=.x)
+
+#loop.list2 <- names(data_temp2[, c(9:12,14:18,20,21,29)])
+
+RLS_table_3 <- data_temp3 %>% 
+  dplyr::select(loop.list3[-1]) %>%  # enleve la var binomiale
+  map(~glmmTMB(.x ~ Traitement+ (1|Replicat), data = data_temp3))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of linear model for each parameters (90% explo)", booktabs = T) %>%
+	kable_styling(full_width = T)
+
+RLS_table_3
+
+
+RLS_table3b <- data_temp3 %>% 
+  dplyr::select(loop.list3) %>%  # enleve la var binomiale
+  map(~wilcox.test(.x ~ Traitement, data = data_temp3))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ #dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of Mann-Whitney for each parameters", booktabs = T) %>%
+	kable_styling(full_width = T)
+
+RLS_table3b
+
+```
+
+Prop time moving :
+
+```{r}
+
+PTM2 <- glmmTMB(Prop_time_moving~Traitement, data=data_temp3, family=binomial(link = "logit"))
+summary(PTM2)
+
+
+```
+
+## Border zone analysis
+
+### 90 % exploration
+
+In this part are presented metrics for only the period taken to explore 90% of the area. As previously, individual with more than 20% of time lost are removed.
+
+```{r}
+
+
+data_temp2_sp <- data_LAM_vid_spatial %>% filter(Prop_time_lost < 0.20 &
+             Sequence == "Seq_90")
+
+
+loop.list2_sp <- c("Latency", "Prop_time_inside", "Time_inside", "Nb_entries", "Prop_time_moving", "Traveled_Dist", "Traveled_Dist_Moving", "Average_Speed", "Average_Speed_moving",
+               "Meander_moving", "Exploration_absolute_value")
+
+
+plot_list <- list()
+
+for (n in loop.list2_sp)
+{
+  plot_list[[n]] <- 
+    ggplot(data_temp2_sp)+
+    geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="Traitement"), width = 0.15, position = position_dodge(0.9)) +
+    geom_violin(aes_string(x="Traitement", y=n,
+                           fill = "Traitement",
+                           colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none")+
+    ylab(paste(n))+
+    scale_color_manual(
+      values = c("#648FFF", "#FE6100"))+
+    scale_fill_manual(
+      values = c("#648FFF", "#FE6100"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:6], nrow=2)
+ggsave("./Data_larvae/90p-end_border_1-4_ttmt.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[7:11], nrow=2)
+ggsave("./Data_larvae/90p-end_border_7-11_ttmt.jpeg", width = 30, height = 20, units = "cm")
+
+
+data_temp2_sp %>% 
+  tbl_summary(
+    include = loop.list2_sp,
+    by=Traitement,
+    type = loop.list2_sp ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+
+
+```
+
+```{r}
+plot_list <- list()
+
+for (n in loop.list2_sp)
+{
+  plot_list[[n]] <- 
+    ggplot(subset(data_temp2_sp, sexe!="NA"))+
+    #geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="sexe"), width = 0.15, position = position_dodge(0.9)) +
+    geom_violin(aes_string(x="Traitement", y=n,
+                           fill = "sexe",
+                           colour="sexe"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none")+
+    ylab(paste(n))+
+   scale_color_manual(
+    values = c("deeppink4", "deepskyblue4"))+
+  scale_fill_manual(
+    values = c("deeppink4", "deepskyblue4"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:6], nrow=2)
+ggsave("./Data_larvae/0-90p_border_1-6_sex.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[7:11], nrow=2)
+ggsave("./Data_larvae/0-90p_border_7-11_sex.jpeg", width = 30, height = 20, units = "cm")
+
+```
+
+### 90% exploration to the end of recording
+
+```{r}
+
+
+data_temp3_sp <- data_LAM_vid_spatial %>% filter(Prop_time_lost < 0.20 &
+             Sequence == "Seq_all")
+
+
+plot_list <- list()
+
+for (n in loop.list2_sp)
+{
+  plot_list[[n]] <- 
+    ggplot(data_temp3_sp)+
+    geom_jitter(aes_string(x="Traitement", y=n, color="Traitement")) +
+    geom_boxplot(aes_string(x="Traitement", y=n, color="Traitement"), width = 0.15, position = position_dodge(0.9)) +
+    geom_violin(aes_string(x="Traitement", y=n,
+                           fill = "Traitement",
+                           colour="Traitement"),alpha=0.3, linewidth = 0) +
+    theme_light()+
+    theme(legend.position = "none")+
+    ylab(paste(n))+
+    scale_color_manual(
+      values = c("#648FFF", "#FE6100"))+
+    scale_fill_manual(
+      values = c("#648FFF", "#FE6100"))
+  #print(plot_list[[n]])
+}
+
+wrap_plots(plot_list[1:6], nrow=2)
+ggsave("./Data_larvae/90p_border_1-6_ttmt.jpeg", width = 30, height = 20, units = "cm")
+
+wrap_plots(plot_list[7:11], nrow=2)
+ggsave("./Data_larvae/90p_border_7-11_ttmt.jpeg", width = 30, height = 20, units = "cm")
+
+
+data_temp3_sp %>% 
+  tbl_summary(
+    include = loop.list2_sp,
+    by=Traitement,
+    type = loop.list2_sp ~ "continuous2",
+    statistic = all_continuous2() ~ c("{median} ({p25} - {p75}", "{mean} ({sd})"),
+    digits = list(
+      all_continuous2() ~ 2)
+  )
+```
+
+### Univariate analysis
+
+#### 0-90% exploration in border zone
+
+```{r}
+
+## one by one 
+
+# prop time moving 
+
+ptmov2 <- glmmTMB(Prop_time_moving~traitement*sexe + (1|Replicat), data=data_temp2_sp, family=binomial(link="logit"))
+summary(ptmov2)
+Anova(ptmov2, type="3")
+
+## no interaction, no effect of treatment neither sex
+
+# prop time inside 
+pt_ins <- glmmTMB(Prop_time_inside~traitement*sexe + (1|Replicat), data=data_temp2_sp, family=binomial(link="logit"))
+summary(pt_ins)
+Anova(pt_ins, type="3")
+## no interaction, no effect of treatment neither sex
+
+# Average speed 
+avg_speed_b <- glmmTMB(Average_Speed~traitement*sexe+(1|Replicat), data=data_temp2_sp)
+summary(avg_speed_b)
+Anova(avg_speed_b, type="3")
+## no interaction, no effect of treatment neither sex
+
+avg_speed_mov <- glmmTMB(Average_Speed_moving~traitement*sexe+(1|Replicat), data=data_temp2_sp)
+summary(avg_speed_mov)
+Anova(avg_speed_mov)
+## no interaction, no effect of treatment neither sex
+
+# # Traveled distance 
+# trvl <- glmmTMB(Traveled_Dist~traitement*sexe+(1|Replicat), data=data_temp)
+# summary(trvl)
+# Anova(trvl)
+# ## no interaction, no effect of treatment neither sex
+# 
+# trvl_moving <- glmmTMB(Traveled_Dist_Moving~traitement*sexe+(1|Replicat), data=data_temp)
+# summary(trvl_moving)
+# Anova(trvl_moving)
+# ## no interaction, no effect of treatment neither sex
+
+
+## Nb entries in border zone -----
+hist(data_temp2_sp$Nb_entries)
+
+Nb_entrs <- glmmTMB(Nb_entries~traitement*sexe+(1|Replicat), data=data_temp2_sp, family = poisson(link = "log"))
+
+summary(Nb_entrs)
+Anova(Nb_entrs)
+
+Nb_entrs_2 <- glmmTMB(Nb_entries~traitement*sexe+(1|Replicat), data=data_temp2_sp, family =nbinom1)
+AIC(Nb_entrs,Nb_entrs_2)
+
+summary(Nb_entrs_2)
+Anova(Nb_entrs_2, type="3")
+
+# nbinom seems to fit better 
+
+library(DHARMa)
+sim <- simulateResiduals(Nb_entrs_2)
+plot(sim)# thats ok 
+
+## no interaction, no effect of treatment neither sex
+
+
+
+library(glmmTMB)
+library(broom.mixed)
+
+data_glm_sp <- data_temp2_sp %>% 
+  mutate_if(is.character, as.factor)
+
+RLS_table_sp <- data_glm_sp %>% 
+  dplyr::select(loop.list2_sp) %>%  # enleve la var binomiale
+  map(~wilcox.test(.x ~ Traitement, data = data_glm_sp))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ #dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of Mann-Whitney for each parameters", booktabs = T) %>%
+	kable_styling(full_width = T)
+
+RLS_table_sp
+
+```
+
+#### 90% exploration to the end in border zone
+
+```{r}
+
+ptmov3 <- glmmTMB(Prop_time_moving~traitement*sexe + (1|Replicat), data=data_temp3_sp, family=binomial(link="logit"))
+summary(ptmov3)
+Anova(ptmov3, type="3")
+
+## no interaction, no effect of treatment neither sex
+
+# prop time inside 
+pt_ins3 <- glmmTMB(Prop_time_inside~traitement*sexe + (1|Replicat), data=data_temp3_sp, family=binomial(link="logit"))
+summary(pt_ins3)
+Anova(pt_ins3, type="3")
+## no interaction, no effect of treatment neither sex
+
+# Average speed 
+avg_speed_b3 <- glmmTMB(Average_Speed~traitement*sexe+(1|Replicat), data=data_temp3_sp)
+summary(avg_speed_b3)
+Anova(avg_speed_b3, type="3")
+## no interaction, no effect of treatment neither sex
+
+avg_speed_mov3 <- glmmTMB(Average_Speed_moving~traitement*sexe+(1|Replicat), data=data_temp3_sp)
+summary(avg_speed_mov3)
+Anova(avg_speed_mov3)
+## no interaction, no effect of treatment neither sex
+
+# # Traveled distance 
+# trvl <- glmmTMB(Traveled_Dist~traitement*sexe+(1|Replicat), data=data_temp)
+# summary(trvl)
+# Anova(trvl)
+# ## no interaction, no effect of treatment neither sex
+# 
+# trvl_moving <- glmmTMB(Traveled_Dist_Moving~traitement*sexe+(1|Replicat), data=data_temp)
+# summary(trvl_moving)
+# Anova(trvl_moving)
+# ## no interaction, no effect of treatment neither sex
+
+
+## Nb entries in border zone -----
+hist(data_temp3_sp$Nb_entries)
+
+Nb_entrs3 <- glmmTMB(Nb_entries~traitement*sexe+(1|Replicat), data=data_temp3_sp, family = poisson(link = "log"))
+
+Nb_entrs_3b <- glmmTMB(Nb_entries~traitement*sexe+(1|Replicat), data=data_temp3_sp, family =nbinom1)
+
+AIC(Nb_entrs3,Nb_entrs_3b)
+
+summary(Nb_entrs_3b)
+Anova(Nb_entrs_3b, type="3")
+
+# nbinom seems to fit better 
+
+sim <- simulateResiduals(Nb_entrs_3b)
+plot(sim)# thats ok 
+
+## no interaction, no effect of treatment neither sex
+
+
+
+
+########
+data_glm_sp3 <- data_temp3_sp %>% 
+  mutate_if(is.character, as.factor)
+
+
+RLS_table3_sp <- data_glm_sp3 %>% 
+  dplyr::select(loop.list2_sp) %>%  # enleve la var binomiale
+  map(~wilcox.test(.x ~ Traitement, data = data_glm_sp3))%>% 
+  map_dfr(~tidy(., effects = "fixed"), .id = 'source')%>% 
+ #dplyr::filter(term!="(Intercept)") %>% 
+  arrange(p.value) %>% 
+  kbl(caption = "Coefficient of Mann-Whitney for each parameters", booktabs = T) %>%
+	kable_styling(full_width = T)
+
+RLS_table3_sp
+
+```
+
+For movement around the border, any significant difference between groups have been evidenced for all parameters tested. I choose to apply only wilcoxon as data do not fit gaussian distrib.
+
+## Multivariate analysis
+
+I apply mutlivariate analysis only on all zone exploration.
+
+### Relation between co-variable
+
+### Correlation
+
+```{r}
+
+library(corrplot)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+data_LAM_vid %>% filter(Sequence=="General") %>% select(all_of(loop.list)) %>% cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper", order="hclust")
+
+data_temp %>% select(c(all_of(loop.list), "Time_pup")) %>%drop_na(Time_pup) %>%  cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper", order="hclust")
+
+# cor plot only fo selected covariable 
+loop.list.selvar2 <- c("Prop_time_moving", "Average_Speed", "Traveled_Dist", "Meander", "Max_bout_inactiv", "Max_Speed", "Time_pup")
+
+data_temp %>% select(all_of(loop.list.selvar2)) %>%drop_na(Time_pup) %>%  cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper", order="hclust")
+
+# Test correlation only for ctrl 
+
+data_temp %>% dplyr::filter(Traitement=="Control") %>% select(all_of(loop.list.selvar2)) %>%drop_na(Time_pup) %>% cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper", order="hclust")
+
+# Test correlation only for exposed
+
+data_temp %>% dplyr::filter(Traitement=="Permethrin") %>% select(all_of(loop.list.selvar2)) %>%drop_na(Time_pup) %>% cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper", order="hclust")
+
+data_temp2 %>% filter(Sequence=="Seq_90") %>%  select(all_of(loop.list2)) %>% cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper",order="hclust")
+
+data_temp3 %>% filter(Sequence=="Seq_all") %>%  select(all_of(loop.list3)) %>% cor() %>% 
+  corrplot(method="color", col=col(200),
+             type="upper", order="hclust")
+```
+
+### ACP
+
+1st graph : 90% of exploration. 2nd graph : 90% of exploration without outlier values of meander 3tr graph : 90% to the end.
+
+Co variable relation.
+
+```{r}
+library(corrplot)
+
+df_ACP<- data_temp %>% select(c(all_of(loop.list),"Traitement", "sexe")) %>% 
+  mutate_if(is.character, as.factor)
+
+df_ACP %>% plot()
+
+loop.list.selvar <- c("Prop_time_moving", "Average_Speed", "Traveled_Dist", "Meander", "Max_bout_inactiv", "Max_Speed")
+
+# ajout du jour de mort adulte 
+loop.list.selvar2 <- c("Prop_time_moving", "Average_Speed", "Traveled_Dist", "Meander", "Max_bout_inactiv", "Max_Speed", "Time")
+
+
+df_ACP2<- data_temp %>% select(c(loop.list.selvar2,"Traitement", "sexe")) %>% 
+  mutate_if(is.character, as.factor) %>% drop_na(Time)
+
+df_ACP2 %>% plot()
+
+# drop absurd values of meander (pb of parameter estimation to check)
+df_ACPb<- data_temp2 %>% filter(Meander<10000) %>% select(c(all_of(loop.list2),"Traitement", "sexe")) %>% 
+  mutate_if(is.character, as.factor)
+
+df_ACPb %>% plot()
+
+df_ACP3<- data_temp3 %>% select(c(all_of(loop.list3),"Traitement", "sexe")) %>% 
+  mutate_if(is.character, as.factor)
+
+df_ACP3 %>% plot()
+
+pca1<-PCA(df_ACP[,-c(10,11)], graph=FALSE)
+pca2<-PCA(df_ACP2[,-c(8,9)], graph=FALSE)
+
+pca1b<-PCA(df_ACPb[,-c(9,10)], graph=FALSE)
+pca3<-PCA(df_ACP3[,-c(9,10)], graph=FALSE)
+
+# ACP1 <- res_by_ind %>% filter(Sequence=="General"& Prop_time_lost<0.2) %>% select(c(all_of(loop.list),"Traitement")) %>% 
+#   mutate_if(is.character, as.factor) %>% PCA()
+
+#ACP2<- res_by_ind_spatial %>% filter(Sequence=="Seq_0" & Prop_time_lost<0.2) %>% select(all_of(loop.list2)) %>% PCA()
+
+
+```
+
+```{r}
+
+fviz_eig(pca1, addlabels = TRUE) 
+res <- get_pca_var(pca1)
+corrplot(res$cos2)
+
+fviz_eig(pca2, addlabels = TRUE) 
+res2 <- get_pca_var(pca2)
+corrplot(res2$cos2)
+
+
+fviz_eig(pca1b, addlabels = TRUE) 
+res2 <- get_pca_var(pca1b)
+corrplot(res2$cos2)
+
+fviz_eig(pca3, addlabels = TRUE) 
+res3 <- get_pca_var(pca3)
+corrplot(res3$cos2)
+```
+
+Variable representation :
+
+```{r}
+fviz_pca_var(pca1, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+
+fviz_pca_var(pca2, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+
+fviz_pca_var(pca1b, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+fviz_pca_var(pca3, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+
+```
+
+#### Separation by treatment
+
+Individual representation :
+
+```{r}
+fviz_pca_ind(pca1,
+             label = "none", # hide individual labels
+             habillage =  df_ACP$Traitement, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+
+fviz_pca_ind(pca2,
+             label = "none", # hide individual labels
+             habillage =  df_ACP2$Traitement, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+
+fviz_pca_ind(pca1b,
+             label = "none", # hide individual labels
+             habillage =  df_ACPb$Traitement, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+
+fviz_pca_ind(pca3,
+             label = "none", # hide individual labels
+             habillage =  df_ACP3$Traitement, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+```
+
+#### Separation by sexe
+
+```{r}
+
+fviz_pca_ind(pca1,
+             label = "none", # hide individual labels
+             habillage =  df_ACP$sexe, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+
+fviz_pca_ind(pca2,
+             label = "none", # hide individual labels
+             habillage =  df_ACP2$sexe, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+
+fviz_pca_ind(pca1b,
+             label = "none", # hide individual labels
+             habillage =  df_ACPb$sexe, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+
+fviz_pca_ind(pca3,
+             label = "none", # hide individual labels
+             habillage =  df_ACP3$sexe, # color by groups
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+
+```
+
+```{r}
+
+# dim 1 et 2 
+fviz_pca_biplot(pca2, axes = c(1, 2), col.var="contrib", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+
+#dim 1 et 3 
+fviz_pca_biplot(pca2, axes = c(1, 3), col.var="contrib", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+
+# dim 2 et 3 
+fviz_pca_biplot(pca2, axes = c(2, 3), col.var="contrib", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping
+             )
+```
+
+Interpretation of ACP results :
+
+I retrieve some absurd values (extremely high values) to improve ACP results for 1 hours recording analysis.
+
+Insecticides effect : The insecticide seems not be involved in movement modification with parameter used here.
+
+Description of the movement : for 1 hour recording, it seems that the movement could be divided mainly by the 1st axe that could be resumed by proportion in movement, speed and distance traveled and 2nd axes mainly consider the meander of the movement.
+
+In summary, lazy, sinuous and slow movement vs active, straight and fast movement.
+
+The analysis of navigation of larvae with parameters bring some informations about the characterisation of this type of behaviour. In addition, we could apply classic comparative statistical analysis that allow to compare parameters between groups. Nevertheless, parameters used before are based on a priori/hypothesis of the navigation decomposition and parameters of interest that described the navigation but some information could be hidden besides the time series represented by the position of the larvae during 1hour. Application of data-driven analysis could highlight some properties of navigation strategy of larvae hidden until now. We propose to apply hidden markov model or activity clustering methods to characterise trajectory based on all data set along time.
+
+# Non supervised clustering on 1h recording
+
+I try Kmeans methods to be able to evidence group of individuals with different trajectories characteristics
+
+```{r}
+library(factoextra)
+
+set.seed(123)
+km1 <- kmeans(df_ACP2[,-c(8,9)], 2, nstart = 50)
+
+fviz_cluster(km1, data = df_ACP2[,-c(8,9)],
+             palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+
+km2 <- kmeans(df_ACP2[,-c(8,9)], 3, nstart = 50)
+
+fviz_cluster(km2, data = df_ACP2[,-c(8,9)],
+             palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+km3 <- kmeans(df_ACP2[,-c(8,9)], 3, nstart = 50)
+
+fviz_cluster(km3, data = df_ACP2[,-c(8,9)],
+             #palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+
+km1$tot.withinss
+km2$tot.withinss
+km3$tot.withinss
+
+km.matrx <- matrix(0, nrow=10, ncol=2)
+
+for (i in 1:nrow(km.matrx)){
+  km_Res <- kmeans(df_ACP2[,-c(8,9)], i, nstart = 50)
+km.matrx[i,2] <-km_Res$tot.withinss 
+km.matrx[i,1] <- i
+}
+min(km.matrx[,2])
+
+plot(km.matrx[,1], km.matrx[,2])
+
+```
+
+# Larvae size
+
+```{r}
+
+# join larvae size and treatment 
+# addition of variable for join
+
+taille_larv <- taille_larv %>% #rename(Camera=camera) %>% 
+  mutate(Plaque=as.numeric(str_sub(place_plaque,2,2)), 
+         Replicat= case_when(replicat==6~paste0("R0", replicat),
+         replicat==8~paste0("R0", replicat),
+         replicat==9~paste0("R0", replicat),
+             .default = paste0("R",replicat)))
+
+# join 
+
+taille_larv <- taille_larv %>% inner_join(corres_ttmt)
+
+taille_larv %>% 
+  ggplot(aes(x=Traitement, y=mesure, group = Traitement, colour=Traitement))+
+  geom_jitter()+
+  geom_boxplot(aes(x=Traitement, y=mesure, group=Traitement))+theme_light()
+ggsave("./Data_larvae/larval_size.jpeg", width = 30, height = 20, units = "cm")
+
+```
+
+# Pupation time
+
+```{r}
+metadata_sub 
+library(survminer)
+library(survival)
+
+pup_time <- survfit(Surv(Time_pup,passage_nymphe)~traitement, data=metadata_sub) # survival object for graph
+ggsurvplot(pup_time, data = metadata_sub, facet.by = "traitement", legend.title = "Pupaison time")#KM plot
+
+summary(pup_time)# 100 obs lost due to missingness. NA= non observed, may I infer on the day before ? 
+
+
+```
