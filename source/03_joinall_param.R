@@ -9,19 +9,19 @@ library(here)
 library(tidyverse)
 
 # Import data by individual for orange and red 
-corres_ID_orange <- read_csv2("./data_larvae/corres_Arena_ID_orange.csv") %>% 
+corres_ID_orange <- read_csv2("./data_larvae/Res_orange_1fps/corres_Arena_ID_orange.csv") %>% 
   select(c(1:2)) %>% mutate(Arena=as.integer(str_extract(Arena, "\\d.*")))
   
-corres_ID_rouge<- read_csv2("./data_larvae/Data_vid_rouge/corres_ID_rouge_1.csv") %>%
+corres_ID_rouge<- read_csv2("./data_larvae/Res_rouge_1fps/corres_ID_rouge_1.csv") %>%
   select(c(1:4)) %>% 
   mutate(Arena=as.integer(str_extract(Arena, "\\d.*")),
          Rpi=str_replace(Rpi, "rpi02","rpi2"))
 
 
-corres_ttmt_orange <- read_csv2("./data_larvae/corr_traitement_plaque.csv") %>% 
+corres_ttmt_orange <- read_csv2("./data_larvae/Res_orange_1fps/corr_traitement_plaque.csv") %>% 
   select(c(1:4)) %>% rename(Rpi=Camera)
 
-corres_ttmt_rouge<- read_csv2("./data_larvae/Data_vid_rouge/corr_ttmt_plaque_rouge.csv") %>% 
+corres_ttmt_rouge<- read_csv2("./data_larvae/Res_rouge_1fps/corr_ttmt_plaque_rouge.csv") %>% 
   mutate(Lot=as.character(Lot), Lot2=Lot, Rpi=str_replace(Rpi, "rpi02","rpi2")) %>% dplyr::select(!c(Lot))
 
 

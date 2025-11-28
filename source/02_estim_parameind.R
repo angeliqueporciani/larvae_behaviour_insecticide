@@ -82,7 +82,7 @@ tib_all_file <- tib_all_file %>%
          Experiment=rep("Rouge")) %>% mutate_if(is.character,as.factor)
 
 #corres_ID_orange <- read_csv2("./data_larvae/corres_Arena_ID_orange.csv") %>% select(c(1:2))
-corres_ID_rouge<- read_csv2("./data_larvae/Data_vid_rouge/corres_ID_rouge_1.csv") %>% 
+corres_ID_rouge<- read_csv2("./data_larvae/Res_rouge_1fps/corres_ID_rouge_1.csv") %>% 
   select(c(1:4)) %>% mutate_if(is.character,as.factor)
 
 # join 
